@@ -25,12 +25,14 @@ Before activation:
 
 1. Protect and lock `main`; disable force pushes and deletion.
 2. Restrict the `u1-claude` environment to the protected `main` branch.
-3. Keep `config/u1-executor.json` bound to one Season 2 policy SHA, three fixed
+3. Keep `config/u1-executor.json` bound to one Season 2 policy SHA, two fixed
    pilots, a seven-day expiry, zero additional spend, and one-model concurrency.
 4. Set `U1_EXECUTOR_TRUSTED_SHA` to the approved executor commit.
 5. Install the two environment secrets independently through GitHub Settings.
 6. Keep `control/pause` and `control/u1-pause` on the Season 2 control Issue
    until the final attended activation decision.
+7. Verify that the repository does not define the `ACTIONS_STEP_DEBUG` secret
+   and set `actions_step_debug_disabled_verified` only after that inspection.
 
 Any missing, inaccessible, stale, duplicate, or malformed state is a denial.
 
@@ -41,6 +43,8 @@ login for attended bootstrap reviews. It passes no file, shell, web, MCP, or
 delegation tools to Claude. The exact Git diff is supplied as untrusted prompt
 evidence, and only schema-valid output is persisted. A local ignored ledger
 records call identity, reported usage, and verdict without storing prompt text.
+If the CLI returns prose instead of StructuredOutput, the prose is retained as
+feedback but the trusted verdict is forced to `CHANGES_REQUESTED`.
 
 The CLI's `total_cost_usd` value is recorded as reported usage; it must not be
 treated as proof of an additional invoice or as proof that a subscription has
