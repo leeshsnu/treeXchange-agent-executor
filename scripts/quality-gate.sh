@@ -5,8 +5,12 @@ export PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/treexchange-executor-pycache"
 
 python3 -m json.tool config/u1-executor.json >/dev/null
 python3 -m json.tool schemas/u1-review-output.schema.json >/dev/null
-python3 -m py_compile scripts/u1_executor.py scripts/test_u1_executor.py
-python3 -m unittest -v scripts/test_u1_executor.py
+python3 -m py_compile \
+  scripts/u1_executor.py \
+  scripts/local_claude_bridge.py \
+  scripts/test_u1_executor.py \
+  scripts/test_local_claude_bridge.py
+python3 -m unittest -v scripts/test_u1_executor.py scripts/test_local_claude_bridge.py
 ruby -e 'require "yaml"; Dir[".github/workflows/*.{yml,yaml}"].each { |path| YAML.parse_file(path) }'
 python3 scripts/u1_executor.py validate-config
 
