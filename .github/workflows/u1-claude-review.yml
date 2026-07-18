@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: Checkout exact executor without credentials
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -76,7 +76,7 @@ jobs:
       REQUEST_ID: ${{ inputs.request_id }}
     steps:
       - name: Checkout exact trusted executor without credentials
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
