@@ -42,6 +42,9 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
   user/project settings disabled;
 - requires schema-valid output and never resumes a prior Claude session;
 - rejects credential-like or oversized evidence;
+- confines the review output and ignored ledger to the repository being
+  reviewed, preventing a private Season 2 review from crossing into this public
+  executor repository;
 - keeps a private, ignored call ledger, records failed attempts before invoking
   Claude, and refuses a duplicate diff or a seventh call.
 
