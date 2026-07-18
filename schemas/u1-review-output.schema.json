@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict",
+    "summary",
+    "findings",
+    "verification",
+    "requirement_coverage",
+    "residual_risk"
+  ],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["APPROVE", "CHANGES_REQUESTED"]
+    },
+    "summary": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "findings": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "status", "finding"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["P0", "P1", "P2", "P3", "none"]
+          },
+          "status": {"type": "string", "enum": ["open", "closed"]},
+          "finding": {"type": "string", "minLength": 1, "maxLength": 1000}
+        }
+      }
+    },
+    "verification": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    },
+    "requirement_coverage": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    },
+    "residual_risk": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    }
+  }
+}
