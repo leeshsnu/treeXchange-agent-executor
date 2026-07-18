@@ -33,6 +33,10 @@ Before activation:
    until the final attended activation decision.
 7. Verify that the repository does not define the `ACTIONS_STEP_DEBUG` secret
    and set `actions_step_debug_disabled_verified` only after that inspection.
+8. The public dispatch currently exposes PR, Head SHA, reservation, and request
+   identifiers as Actions event metadata. Keep
+   `public_dispatch_metadata_accepted` false unless the user explicitly accepts
+   this disclosure for a bounded pilot; an opaque private broker is preferred.
 
 Any missing, inaccessible, stale, duplicate, or malformed state is a denial.
 
@@ -43,6 +47,8 @@ login for attended bootstrap reviews. It passes no file, shell, web, MCP, or
 delegation tools to Claude. The exact Git diff is supplied as untrusted prompt
 evidence, and only schema-valid output is persisted. A local ignored ledger
 records call identity, reported usage, and verdict without storing prompt text.
+The bridge verifies that the ledger is genuinely ignored by the reviewed Git
+repository and serializes call reservations with an OS file lock.
 If the CLI returns prose instead of StructuredOutput, the prose is retained as
 feedback but the trusted verdict is forced to `CHANGES_REQUESTED`.
 

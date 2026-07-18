@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +151,57 @@ def save_private_json(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+@contextlib.contextmanager
+def locked_ledger(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def reserve_attempt(path: Path, attempt: dict[str, Any]) -> int:
+    with locked_ledger(path):
+        ledger = load_ledger(path)
+        if len(ledger["calls"]) >= MAX_CALLS:
+            fail("local Claude call cap has been reached")
+        if any(
+            call.get("diff_sha256") == attempt["diff_sha256"]
+            for call in ledger["calls"]
+        ):
+            fail("this exact review diff has already consumed a Claude call")
+        ledger["calls"].append(attempt)
+        save_private_json(path, ledger)
+        return len(ledger["calls"])
+
+
+def finish_attempt(path: Path, attempt_id: str, updates: dict[str, Any]) -> int:
+    with locked_ledger(path):
+        ledger = load_ledger(path)
+        matches = [call for call in ledger["calls"] if call.get("attempt_id") == attempt_id]
+        if len(matches) != 1:
+            fail("reserved Claude call could not be uniquely finalized")
+        matches[0].update(updates)
+        save_private_json(path, ledger)
+        return len(ledger["calls"])
+
+
+def ledger_is_ignored(repo: Path, ledger: Path) -> bool:
+    completed = subprocess.run(
+        ["git", "check-ignore", "--quiet", "--no-index", str(ledger)],
+        cwd=repo,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
 def require_output_boundary(repo: Path, output: Path, ledger: Path) -> tuple[Path, Path]:
     root = repo.resolve()
     resolved_output = output.resolve()
@@ -159,6 +213,8 @@ def require_output_boundary(repo: Path, output: Path, ledger: Path) -> tuple[Pat
         fail("review output and ledger must remain inside the reviewed repository")
     if not ledger_relative.parts or ledger_relative.parts[0] != ".agent-state":
         fail("Claude call ledger must remain under the ignored .agent-state directory")
+    if not ledger_is_ignored(root, resolved_ledger):
+        fail("reviewed repository must explicitly ignore the Claude call ledger")
     if resolved_output.exists():
         fail("review output path already exists; use a new provenance-bound filename")
     return resolved_output, resolved_ledger
@@ -264,15 +320,11 @@ def review(args: argparse.Namespace) -> None:
     diff = bounded_diff(repo, base_sha, head_sha)
     diff_sha = hashlib.sha256(diff.encode("utf-8")).hexdigest()
 
-    ledger = load_ledger(ledger_path)
-    if len(ledger["calls"]) >= MAX_CALLS:
-        fail("local Claude call cap has been reached")
-    if any(call.get("diff_sha256") == diff_sha for call in ledger["calls"]):
-        fail("this exact review diff has already consumed a Claude call")
-
     root = Path(__file__).parents[1]
     schema = review_schema(root)
+    attempt_id = str(uuid.uuid4())
     attempt = {
+        "attempt_id": attempt_id,
         "called_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "repository": identity,
         "base_sha": base_sha,
@@ -280,16 +332,20 @@ def review(args: argparse.Namespace) -> None:
         "diff_sha256": diff_sha,
         "status": "started",
     }
-    ledger["calls"].append(attempt)
-    save_private_json(ledger_path, ledger)
+    ledger_calls = reserve_attempt(ledger_path, attempt)
     try:
         response = invoke_claude(
             build_prompt(identity, base_sha, head_sha, diff), schema, args.timeout_seconds
         )
     except (BridgeError, u1_executor.GateError):
-        attempt["status"] = "failed"
-        attempt["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        save_private_json(ledger_path, ledger)
+        finish_attempt(
+            ledger_path,
+            attempt_id,
+            {
+                "status": "failed",
+                "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            },
+        )
         raise
     wrapper = response["wrapper"]
     output: dict[str, Any] = {
@@ -319,7 +375,9 @@ def review(args: argparse.Namespace) -> None:
         json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
 
-    attempt.update(
+    ledger_calls = finish_attempt(
+        ledger_path,
+        attempt_id,
         {
             "status": ledger_status,
             "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -327,9 +385,8 @@ def review(args: argparse.Namespace) -> None:
             "num_turns": wrapper.get("num_turns"),
             "total_cost_usd_reported": wrapper.get("total_cost_usd"),
             "verdict": verdict,
-        }
+        },
     )
-    save_private_json(ledger_path, ledger)
     print(
         json.dumps(
             {
@@ -338,7 +395,7 @@ def review(args: argparse.Namespace) -> None:
                 "format": response["format"],
                 "head_sha": head_sha,
                 "output": str(output_path),
-                "ledger_calls": len(ledger["calls"]),
+                "ledger_calls": ledger_calls,
                 "total_cost_usd_reported": wrapper.get("total_cost_usd"),
             },
             separators=(",", ":"),

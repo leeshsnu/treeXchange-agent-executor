@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -73,6 +74,37 @@ class BridgeTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(bridge.load_ledger(ledger)["calls"][0]["diff_sha256"], "abc")
+
+    def test_concurrent_duplicate_reservation_allows_exactly_one_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            barrier = threading.Barrier(8)
+            outcomes = []
+            outcome_lock = threading.Lock()
+
+            def reserve(index):
+                barrier.wait()
+                attempt = {
+                    "attempt_id": f"attempt-{index}",
+                    "diff_sha256": "same-diff",
+                    "status": "started",
+                }
+                try:
+                    bridge.reserve_attempt(ledger, attempt)
+                    outcome = "reserved"
+                except bridge.BridgeError:
+                    outcome = "denied"
+                with outcome_lock:
+                    outcomes.append(outcome)
+
+            threads = [threading.Thread(target=reserve, args=(index,)) for index in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(outcomes.count("reserved"), 1)
+        self.assertEqual(outcomes.count("denied"), 7)
 
     def test_repository_identity_is_allowlisted(self):
         with mock.patch.object(

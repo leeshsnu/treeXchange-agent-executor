@@ -20,6 +20,7 @@
     "trusted_executor_sha_variable_verified": false,
     "hard_cap_verified": false,
     "actions_step_debug_disabled_verified": false,
+    "public_dispatch_metadata_accepted": false,
     "claude_credential_installed_by_user": false,
     "season2_review_token_installed_by_user": false
   },
