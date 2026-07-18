@@ -83,6 +83,25 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaises(bridge.BridgeError):
                 bridge.repository_identity(Path("/tmp/repo"))
 
+    def test_private_review_output_cannot_cross_repository_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "private-repo"
+            repo.mkdir()
+            with self.assertRaises(bridge.BridgeError):
+                bridge.require_output_boundary(
+                    repo,
+                    Path(directory) / "public-repo" / "review.json",
+                    repo / ".agent-state" / "ledger.json",
+                )
+
+    def test_ledger_must_stay_in_ignored_agent_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            with self.assertRaises(bridge.BridgeError):
+                bridge.require_output_boundary(
+                    repo, repo / "reviews" / "review.json", repo / "ledger.json"
+                )
+
     def test_diff_secret_pattern_is_rejected(self):
         secret = b"+github_pat_" + b"A" * 30
         completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=secret, stderr=b"")

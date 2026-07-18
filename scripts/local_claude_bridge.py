@@ -148,6 +148,22 @@ def save_private_json(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def require_output_boundary(repo: Path, output: Path, ledger: Path) -> tuple[Path, Path]:
+    root = repo.resolve()
+    resolved_output = output.resolve()
+    resolved_ledger = ledger.resolve()
+    try:
+        resolved_output.relative_to(root)
+        ledger_relative = resolved_ledger.relative_to(root)
+    except ValueError:
+        fail("review output and ledger must remain inside the reviewed repository")
+    if not ledger_relative.parts or ledger_relative.parts[0] != ".agent-state":
+        fail("Claude call ledger must remain under the ignored .agent-state directory")
+    if resolved_output.exists():
+        fail("review output path already exists; use a new provenance-bound filename")
+    return resolved_output, resolved_ledger
+
+
 def build_prompt(identity: str, base_sha: str, head_sha: str, diff: str) -> str:
     digest = hashlib.sha256(diff.encode("utf-8")).hexdigest()
     return f"""You are Claude, the independent reviewer in the treeXchange Codex-Claude pilot.
@@ -239,6 +255,7 @@ def invoke_claude(prompt: str, schema: dict[str, Any], timeout_seconds: int) -> 
 
 def review(args: argparse.Namespace) -> None:
     repo = args.repo.resolve()
+    output_path, ledger_path = require_output_boundary(repo, args.output, args.ledger)
     identity = repository_identity(repo)
     base_sha = exact_commit(repo, args.base)
     head_sha = exact_commit(repo, args.head)
@@ -247,7 +264,7 @@ def review(args: argparse.Namespace) -> None:
     diff = bounded_diff(repo, base_sha, head_sha)
     diff_sha = hashlib.sha256(diff.encode("utf-8")).hexdigest()
 
-    ledger = load_ledger(args.ledger)
+    ledger = load_ledger(ledger_path)
     if len(ledger["calls"]) >= MAX_CALLS:
         fail("local Claude call cap has been reached")
     if any(call.get("diff_sha256") == diff_sha for call in ledger["calls"]):
@@ -264,7 +281,7 @@ def review(args: argparse.Namespace) -> None:
         "status": "started",
     }
     ledger["calls"].append(attempt)
-    save_private_json(args.ledger, ledger)
+    save_private_json(ledger_path, ledger)
     try:
         response = invoke_claude(
             build_prompt(identity, base_sha, head_sha, diff), schema, args.timeout_seconds
@@ -272,7 +289,7 @@ def review(args: argparse.Namespace) -> None:
     except (BridgeError, u1_executor.GateError):
         attempt["status"] = "failed"
         attempt["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        save_private_json(args.ledger, ledger)
+        save_private_json(ledger_path, ledger)
         raise
     wrapper = response["wrapper"]
     output: dict[str, Any] = {
@@ -297,8 +314,8 @@ def review(args: argparse.Namespace) -> None:
             "Unstructured Claude output is useful feedback but can never authorize approval."
         )
         ledger_status = "succeeded_unstructured"
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
         json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
 
@@ -312,7 +329,7 @@ def review(args: argparse.Namespace) -> None:
             "verdict": verdict,
         }
     )
-    save_private_json(args.ledger, ledger)
+    save_private_json(ledger_path, ledger)
     print(
         json.dumps(
             {
@@ -320,7 +337,7 @@ def review(args: argparse.Namespace) -> None:
                 "verdict": verdict,
                 "format": response["format"],
                 "head_sha": head_sha,
-                "output": str(args.output),
+                "output": str(output_path),
                 "ledger_calls": len(ledger["calls"]),
                 "total_cost_usd_reported": wrapper.get("total_cost_usd"),
             },
