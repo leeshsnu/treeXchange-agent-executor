@@ -48,7 +48,8 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertEqual(command[command.index("--setting-sources") + 1], "")
         self.assertIn("--strict-mcp-config", command)
-        self.assertIn("--system-prompt", command)
+        self.assertIn("--append-system-prompt", command)
+        self.assertNotIn("--system-prompt", command)
         self.assertNotIn("--allowedTools", command)
         self.assertEqual(result["result"]["verdict"], "APPROVE")
 
