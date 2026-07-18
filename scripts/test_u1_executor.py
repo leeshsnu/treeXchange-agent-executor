@@ -6,6 +6,7 @@ import base64
 import importlib.util
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -35,6 +36,7 @@ def active_config():
         "trusted_executor_sha_variable": "U1_EXECUTOR_TRUSTED_SHA",
         "trusted_executor_sha_variable_verified": True,
         "hard_cap_verified": True,
+        "actions_step_debug_disabled_verified": True,
         "claude_credential_installed_by_user": True,
         "season2_review_token_installed_by_user": True,
     }
@@ -88,6 +90,22 @@ class ConfigTests(unittest.TestCase):
                 "GITHUB_REF": "refs/heads/main",
                 "GITHUB_SHA": "c" * 40,
                 "U1_EXECUTOR_TRUSTED_SHA": "d" * 40,
+            },
+            clear=True,
+        ):
+            with self.assertRaises(u1.GateError):
+                u1.validate_identity(config)
+
+    def test_identity_forbids_workflow_rerun(self):
+        config = active_config()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GITHUB_REPOSITORY": u1.EXPECTED_REPOSITORY,
+                "GITHUB_REF": "refs/heads/main",
+                "GITHUB_SHA": "c" * 40,
+                "U1_EXECUTOR_TRUSTED_SHA": "c" * 40,
+                "GITHUB_RUN_ATTEMPT": "2",
             },
             clear=True,
         ):
@@ -150,6 +168,29 @@ class ResultTests(unittest.TestCase):
 
 
 class SourceBoundaryTests(unittest.TestCase):
+    def test_embedded_prompt_contains_only_delimited_sanitized_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, value in {
+                "REVIEW_BOUNDARY.md": "fixed boundary",
+                "METADATA.json": '{"head_sha":"abc"}',
+                "BASE.md": "base evidence",
+                "HEAD.md": "head evidence",
+            }.items():
+                (root / name).write_text(value, encoding="utf-8")
+            prompt = u1.build_embedded_prompt(root)
+        self.assertIn("BEGIN_UNTRUSTED_BASE.md_", prompt)
+        self.assertIn("base evidence", prompt)
+        self.assertIn("Do not use files, shell, network", prompt)
+
+    def test_github_env_multiline_value_is_bounded_by_unique_delimiter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "github-env"
+            u1.append_github_env(path, "U1_REVIEW_PROMPT", "line one\nline two")
+            value = path.read_text(encoding="utf-8")
+        self.assertTrue(value.startswith("U1_REVIEW_PROMPT<<TREEXCHANGE_"))
+        self.assertTrue(value.endswith("\n"))
+
     def test_github_wrapped_base64_is_accepted(self):
         encoded = base64.encodebytes(b"bounded documentation\n").decode("ascii")
         with mock.patch.object(
@@ -183,6 +224,24 @@ class SourceBoundaryTests(unittest.TestCase):
             with self.assertRaises(u1.GateError):
                 u1.verify_run_budget(config, "redacted", "U1-P1")
 
+    def test_per_pilot_budget_uses_minimized_public_run_name(self):
+        config = active_config()
+        runs = [
+            {
+                "created_at": "2026-07-18T09:00:00Z",
+                "event": "workflow_dispatch",
+                "display_title": "U1 Claude review | U1-P1",
+            }
+            for _ in range(3)
+        ]
+        with mock.patch.object(
+            u1,
+            "api_json",
+            return_value={"total_count": len(runs), "workflow_runs": runs},
+        ):
+            with self.assertRaises(u1.GateError):
+                u1.verify_run_budget(config, "redacted", "U1-P1")
+
 
 class StaticWorkflowTests(unittest.TestCase):
     def setUp(self):
@@ -209,11 +268,23 @@ class StaticWorkflowTests(unittest.TestCase):
     def test_github_token_has_no_write_permission(self):
         self.assertNotRegex(self.workflow, r"(?m)^\s+(?:contents|pull-requests|issues): write$")
 
-    def test_fixed_prompt_does_not_embed_dispatch_values(self):
-        prompt = self.workflow.split("          prompt: |", 1)[1].split(
-            "          claude_args:", 1
-        )[0]
-        self.assertNotIn("${{ inputs.", prompt)
+    def test_model_has_no_read_or_other_tools(self):
+        self.assertIn("prompt: ${{ env.U1_REVIEW_PROMPT }}", self.workflow)
+        self.assertIn('--tools ""', self.workflow)
+        self.assertNotIn("--allowedTools", self.workflow)
+        self.assertRegex(self.workflow, r"--disallowedTools[^\n]*Read")
+        self.assertIn("mcp__github", self.workflow)
+
+    def test_workflow_reruns_are_denied_before_credentials(self):
+        self.assertEqual(self.workflow.count("if: github.run_attempt == 1"), 2)
+        self.assertIn("GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}", self.workflow)
+
+    def test_public_run_name_does_not_expose_private_head_or_request(self):
+        run_name = next(
+            line for line in self.workflow.splitlines() if line.startswith("run-name:")
+        )
+        self.assertNotIn("head_sha", run_name)
+        self.assertNotIn("request_id", run_name)
 
     def test_publish_command_performs_final_live_recheck(self):
         publish = self.workflow.split("      - name: Publish only the validated exact-Head review", 1)[1]

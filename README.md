@@ -13,7 +13,8 @@ until a user approves and installs every activation value and credential.
 
 - The executor fetches only one fixed file from the exact base and Head commits.
 - Repository content, PR text, and model output are treated as untrusted data.
-- Claude receives a fixed prompt and a sanitized two-file review workspace.
+- Claude receives a fixed prompt containing only delimited sanitized evidence;
+  it receives no file, shell, web, GitHub, MCP, or delegation tools.
 - Claude cannot merge, push, deploy, clear pause, or claim general work.
 - Model output is schema-validated before a trusted publisher posts it.
 - The executor never stores Season 2 source or review inputs as artifacts.
@@ -41,8 +42,11 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
   user/project settings disabled;
 - requires schema-valid output and never resumes a prior Claude session;
 - rejects credential-like or oversized evidence;
-- keeps a private, ignored call ledger and refuses a duplicate diff or a seventh
-  call.
+- keeps a private, ignored call ledger, records failed attempts before invoking
+  Claude, and refuses a duplicate diff or a seventh call.
 
 This bridge proves real Codex-to-Claude invocation before the unattended GitHub
 executor is activated. It does not merge, push, deploy, or clear pause controls.
+If the installed Claude Code version returns prose instead of StructuredOutput,
+the bridge preserves the feedback but forces `CHANGES_REQUESTED`; unstructured
+output can never authorize continuation or approval.

@@ -5,6 +5,7 @@ export PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/treexchange-executor-pycache"
 
 python3 -m json.tool config/u1-executor.json >/dev/null
 python3 -m json.tool schemas/u1-review-output.schema.json >/dev/null
+python3 -m json.tool reviews/2026-07-18-executor-pr1-claude-review.json >/dev/null
 python3 -m py_compile \
   scripts/u1_executor.py \
   scripts/local_claude_bridge.py \

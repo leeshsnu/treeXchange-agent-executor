@@ -53,6 +53,18 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("--allowedTools", command)
         self.assertEqual(result["result"]["verdict"], "APPROVE")
 
+    def test_unstructured_review_is_captured_for_fail_closed_adjudication(self):
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"is_error": False, "result": "Useful prose review."}),
+            stderr="",
+        )
+        with mock.patch.object(bridge.subprocess, "run", return_value=completed):
+            response = bridge.invoke_claude("bounded", {"type": "object"}, 60)
+        self.assertEqual(response["format"], "unstructured")
+        self.assertEqual(response["raw_review"], "Useful prose review.")
+
     def test_duplicate_diff_is_denied_before_model_call(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Path(directory) / "ledger.json"

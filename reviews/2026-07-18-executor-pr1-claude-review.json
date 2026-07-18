@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code local no-tools bridge",
+  "session_id": "077a1878-e09c-4e06-90f3-cd0f9810e181",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "1bcc9ca58e386684c16e81f16c3fbb411dbd04ad",
+  "head_sha": "65e895686b8a9ce0376ebf732b4d59c594d7e5b8",
+  "raw_format": "prose_then_json",
+  "automatic_verdict": "CHANGES_REQUESTED",
+  "automatic_verdict_reason": "Claude did not use StructuredOutput, so its claimed approval cannot authorize continuation.",
+  "claude_claimed_review": {
+    "verdict": "APPROVE",
+    "summary": "The executor framework implements defense-in-depth security with fail-closed behavior, read-only permissions, SHA pinning, secret detection, bounded scopes, and pre-publish state rechecks. No open P0, P1, or P2 findings were identified.",
+    "findings": [
+      {
+        "severity": "P3",
+        "status": "closed",
+        "finding": "Secret detection patterns cover common cases but are not exhaustive. Mitigated by the overall defense-in-depth design and manual review requirement."
+      },
+      {
+        "severity": "P3",
+        "status": "closed",
+        "finding": "The total_cost_usd_reported value from Claude wrapper is recorded but correctly documented as untrusted for billing purposes in SECURITY.md."
+      }
+    ],
+    "residual_risk": [
+      "Repository owner is also administrator and could modify branch protection settings.",
+      "Secret patterns may not detect all credential formats.",
+      "Claude model behavior within constrained tools is not formally verified.",
+      "Local bridge relies on the user having an authentic Claude CLI installed."
+    ]
+  }
+}

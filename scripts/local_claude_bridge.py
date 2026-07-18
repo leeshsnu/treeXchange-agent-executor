@@ -220,10 +220,21 @@ def invoke_claude(prompt: str, schema: dict[str, Any], timeout_seconds: int) -> 
     if not isinstance(wrapper, dict) or wrapper.get("is_error") is not False:
         fail("Claude Code did not return a successful result")
     result = wrapper.get("structured_output")
-    if not isinstance(result, dict):
-        fail("Claude Code returned no structured review")
-    u1_executor.validate_result(result)
-    return {"wrapper": wrapper, "result": result}
+    if isinstance(result, dict):
+        u1_executor.validate_result(result)
+        return {"wrapper": wrapper, "format": "structured", "result": result}
+    raw_review = wrapper.get("result")
+    if not isinstance(raw_review, str) or not raw_review.strip():
+        fail("Claude Code returned neither a structured nor a text review")
+    if len(raw_review) > 50_000:
+        fail("Claude text review exceeds the safe fallback limit")
+    if any(pattern.search(raw_review) for pattern in u1_executor.SECRET_PATTERNS):
+        fail("Claude text review resembles a credential")
+    return {
+        "wrapper": wrapper,
+        "format": "unstructured",
+        "raw_review": raw_review.strip(),
+    }
 
 
 def review(args: argparse.Namespace) -> None:
@@ -264,16 +275,28 @@ def review(args: argparse.Namespace) -> None:
         save_private_json(args.ledger, ledger)
         raise
     wrapper = response["wrapper"]
-    result = response["result"]
-    output = {
+    output: dict[str, Any] = {
         "schema_version": 1,
         "reviewer": "Claude Code (local no-tools bridge)",
         "repository": identity,
         "base_sha": base_sha,
         "head_sha": head_sha,
         "diff_sha256": diff_sha,
-        "review": result,
+        "format": response["format"],
     }
+    if response["format"] == "structured":
+        result = response["result"]
+        verdict = result["verdict"]
+        output["review"] = result
+        ledger_status = "succeeded"
+    else:
+        verdict = "CHANGES_REQUESTED"
+        output["automatic_verdict"] = verdict
+        output["review_text"] = response["raw_review"]
+        output["reason"] = (
+            "Unstructured Claude output is useful feedback but can never authorize approval."
+        )
+        ledger_status = "succeeded_unstructured"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -281,12 +304,12 @@ def review(args: argparse.Namespace) -> None:
 
     attempt.update(
         {
-            "status": "succeeded",
+            "status": ledger_status,
             "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "session_id": wrapper.get("session_id"),
             "num_turns": wrapper.get("num_turns"),
             "total_cost_usd_reported": wrapper.get("total_cost_usd"),
-            "verdict": result.get("verdict"),
+            "verdict": verdict,
         }
     )
     save_private_json(args.ledger, ledger)
@@ -294,7 +317,8 @@ def review(args: argparse.Namespace) -> None:
         json.dumps(
             {
                 "status": "REVIEWED",
-                "verdict": result["verdict"],
+                "verdict": verdict,
+                "format": response["format"],
                 "head_sha": head_sha,
                 "output": str(args.output),
                 "ledger_calls": len(ledger["calls"]),
