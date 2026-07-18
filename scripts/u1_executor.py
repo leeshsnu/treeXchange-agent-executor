@@ -129,7 +129,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
     pins = config.get("action_pins")
     if pins != {
-        "actions_checkout": "34e114876b0b11c390a56381ad16ebd13914f8d5",
+        "actions_checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
         "anthropics_claude_code_action": "3553f84341b92da26052e28acf1aa898f9511f32",
     }:
         fail("action pins drifted", INVALID)
