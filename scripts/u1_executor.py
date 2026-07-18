@@ -321,14 +321,19 @@ def decode_content(token: str, path: str, ref: str) -> str:
 
 def verify_run_budget(config: dict[str, Any], executor_token: str, pilot_id: str) -> None:
     approved = parse_time(config["activation"]["approved_at"], "approved_at")
+    approved_filter = urllib.parse.quote(
+        ">=" + approved.isoformat().replace("+00:00", "Z"), safe=""
+    )
     value = api_json(
         executor_token,
         f"/repos/{EXPECTED_REPOSITORY}/actions/workflows/u1-claude-review.yml/runs"
-        "?event=workflow_dispatch&per_page=100",
+        f"?event=workflow_dispatch&created={approved_filter}&per_page=100",
     )
     runs = value.get("workflow_runs") if isinstance(value, dict) else None
     if not isinstance(runs, list):
         fail("executor workflow ledger is unavailable")
+    if value.get("total_count") != len(runs):
+        fail("executor workflow ledger is incomplete")
     current_runs: list[dict[str, Any]] = []
     for run in runs:
         created = parse_time(run.get("created_at"), "workflow run created_at")
@@ -420,12 +425,19 @@ def verify_remote_state(
         fail("live reservation artifact is missing, duplicate, or expired")
 
     marker = f"<!-- treeXchange-u1-review:{args.pilot_id}:{args.head_sha} -->"
-    comments = api_json(
-        token,
-        f"/repos/{EXPECTED_SOURCE}/issues/{args.pr_number}/comments?per_page=100",
-    )
-    if not isinstance(comments, list):
-        fail("PR comments could not be checked for deduplication")
+    comments: list[dict[str, Any]] = []
+    for page in range(1, 4):
+        batch = api_json(
+            token,
+            f"/repos/{EXPECTED_SOURCE}/issues/{args.pr_number}/comments?per_page=100&page={page}",
+        )
+        if not isinstance(batch, list):
+            fail("PR comments could not be checked for deduplication")
+        comments.extend(batch)
+        if len(batch) < 100:
+            break
+    else:
+        fail("PR comment ledger is too large to verify completely")
     if any(marker in str(comment.get("body", "")) for comment in comments):
         fail("an exact-Head Claude review already exists")
 
@@ -613,6 +625,7 @@ def main() -> int:
     render.add_argument("--metadata", type=Path, required=True)
     render.add_argument("--output", type=Path, required=True)
     publish = subparsers.add_parser("publish")
+    common_dispatch_arguments(publish)
     publish.add_argument("--metadata", type=Path, required=True)
     publish.add_argument("--comment", type=Path, required=True)
     args = parser.parse_args()
@@ -642,10 +655,17 @@ def main() -> int:
             args.output.write_text(render_review(result, metadata), encoding="utf-8")
             return 0
         if args.command == "publish":
+            pilot = validate_dispatch_values(config, pilots, args)
+            validate_identity(config)
             token = os.environ.get("SEASON2_REVIEW_TOKEN", "")
-            if not token:
-                fail("Season 2 review credential is unavailable")
+            executor_token = os.environ.get("EXECUTOR_GITHUB_TOKEN", "")
+            if not token or not executor_token:
+                fail("required review credentials are unavailable")
+            verify_run_budget(config, executor_token, args.pilot_id)
+            live_metadata = verify_remote_state(config, pilot, args, token)
             metadata = load_object(args.metadata)
+            if live_metadata != metadata:
+                fail("final publish state differs from the model-bound metadata")
             body = args.comment.read_text(encoding="utf-8")
             if not body.startswith(metadata.get("review_marker", "__missing_marker__") + "\n"):
                 fail("rendered review is not bound to the exact pilot and Head", INVALID)

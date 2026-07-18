@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import copy
 import base64
-import datetime as dt
 import importlib.util
 import json
 import os
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -176,6 +173,16 @@ class SourceBoundaryTests(unittest.TestCase):
             with self.assertRaises(u1.GateError):
                 u1.decode_content("redacted", "services/model/README.md", "a" * 40)
 
+    def test_incomplete_workflow_ledger_is_denied(self):
+        config = active_config()
+        with mock.patch.object(
+            u1,
+            "api_json",
+            return_value={"total_count": 2, "workflow_runs": []},
+        ):
+            with self.assertRaises(u1.GateError):
+                u1.verify_run_budget(config, "redacted", "U1-P1")
+
 
 class StaticWorkflowTests(unittest.TestCase):
     def setUp(self):
@@ -207,6 +214,13 @@ class StaticWorkflowTests(unittest.TestCase):
             "          claude_args:", 1
         )[0]
         self.assertNotIn("${{ inputs.", prompt)
+
+    def test_publish_command_performs_final_live_recheck(self):
+        publish = self.workflow.split("      - name: Publish only the validated exact-Head review", 1)[1]
+        self.assertIn("EXECUTOR_GITHUB_TOKEN", publish)
+        self.assertIn("U1_EXECUTOR_TRUSTED_SHA", publish)
+        self.assertIn('--head-sha "$HEAD_SHA"', publish)
+        self.assertIn('--reservation-run-id "$RESERVATION_RUN_ID"', publish)
 
 
 if __name__ == "__main__":

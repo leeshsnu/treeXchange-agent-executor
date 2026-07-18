@@ -146,9 +146,16 @@ jobs:
             --output review-comment.md
       - name: Publish only the validated exact-Head review
         env:
+          EXECUTOR_GITHUB_TOKEN: ${{ github.token }}
           SEASON2_REVIEW_TOKEN: ${{ secrets.SEASON2_REVIEW_TOKEN }}
+          U1_EXECUTOR_TRUSTED_SHA: ${{ vars.U1_EXECUTOR_TRUSTED_SHA }}
         run: |
           python3 scripts/u1_executor.py publish \
+            --pilot-id "$PILOT_ID" \
+            --pr-number "$PR_NUMBER" \
+            --head-sha "$HEAD_SHA" \
+            --reservation-run-id "$RESERVATION_RUN_ID" \
+            --request-id "$REQUEST_ID" \
             --metadata review_input/METADATA.json \
             --comment review-comment.md
       - name: Remove private review material from the runner
