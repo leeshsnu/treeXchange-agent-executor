@@ -37,6 +37,7 @@ def active_config():
         "trusted_executor_sha_variable_verified": True,
         "hard_cap_verified": True,
         "actions_step_debug_disabled_verified": True,
+        "public_dispatch_metadata_accepted": True,
         "claude_credential_installed_by_user": True,
         "season2_review_token_installed_by_user": True,
     }
@@ -183,6 +184,19 @@ class SourceBoundaryTests(unittest.TestCase):
         self.assertIn("base evidence", prompt)
         self.assertIn("Do not use files, shell, network", prompt)
 
+    def test_total_embedded_prompt_stays_below_process_environment_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, value in {
+                "REVIEW_BOUNDARY.md": "fixed boundary",
+                "METADATA.json": "{}",
+                "BASE.md": "a" * 50_000,
+                "HEAD.md": "b" * 50_000,
+            }.items():
+                (root / name).write_text(value, encoding="utf-8")
+            with self.assertRaises(u1.GateError):
+                u1.build_embedded_prompt(root)
+
     def test_github_env_multiline_value_is_bounded_by_unique_delimiter(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "github-env"
@@ -276,7 +290,8 @@ class StaticWorkflowTests(unittest.TestCase):
         self.assertIn("mcp__github", self.workflow)
 
     def test_workflow_reruns_are_denied_before_credentials(self):
-        self.assertEqual(self.workflow.count("if: github.run_attempt == 1"), 2)
+        guard = "if: github.run_attempt == 1 && github.ref == 'refs/heads/main'"
+        self.assertEqual(self.workflow.count(guard), 2)
         self.assertIn("GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}", self.workflow)
 
     def test_public_run_name_does_not_expose_private_head_or_request(self):
