@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "packet_id": "U1-PILOT-2026-01",
+  "status": "proposed_paused",
+  "source_repository": "leeshsnu/treeXchange-season2",
+  "source_base_branch": "main",
+  "control_issue": {
+    "number": 2,
+    "title": "[CONTROL] Agent automation",
+    "global_pause_label": "control/pause",
+    "u1_kill_switch_label": "control/u1-pause"
+  },
+  "activation": {
+    "enabled": false,
+    "approved_by": null,
+    "approved_at": null,
+    "expires_at": null,
+    "trusted_source_policy_sha": null,
+    "trusted_executor_sha_variable": "U1_EXECUTOR_TRUSTED_SHA",
+    "trusted_executor_sha_variable_verified": false,
+    "hard_cap_verified": false,
+    "claude_credential_installed_by_user": false,
+    "season2_review_token_installed_by_user": false
+  },
+  "limits": {
+    "additional_external_spend_krw": 0,
+    "maximum_claude_reviews_total": 6,
+    "maximum_claude_reviews_per_pilot": 2,
+    "maximum_minutes_per_review": 20,
+    "maximum_concurrency": 1,
+    "automatic_merge": false
+  },
+  "action_pins": {
+    "actions_checkout": "34e114876b0b11c390a56381ad16ebd13914f8d5",
+    "anthropics_claude_code_action": "3553f84341b92da26052e28acf1aa898f9511f32"
+  },
+  "pilots": [
+    {
+      "pilot_id": "U1-P1",
+      "issue_number": null,
+      "branch": "codex/u1-p1-model-readme-boundary",
+      "maker_family": "Codex",
+      "reviewer_family": "Claude",
+      "allowed_path": "services/model/README.md"
+    },
+    {
+      "pilot_id": "U1-P3",
+      "issue_number": null,
+      "branch": "codex/u1-p3-serving-readme-truthful-state",
+      "maker_family": "Codex",
+      "reviewer_family": "Claude",
+      "allowed_path": "services/model/serving/README.md"
+    }
+  ],
+  "forbidden_effects": [
+    "merge",
+    "push_source_contents",
+    "modify_source_workflow",
+    "production_deploy",
+    "external_communication",
+    "customer_or_personal_data_access",
+    "new_spend",
+    "public_claim",
+    "clear_control_pause",
+    "general_queue_claim"
+  ]
+}

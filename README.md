@@ -1,2 +1,31 @@
-# treeXchange-agent-executor
-Protected, prompt-bounded Claude execution root for treeXchange agent pilots.
+# treeXchange Agent Executor
+
+This public repository is the credential-bearing execution boundary for tightly
+scoped treeXchange agent pilots. It contains no Season 2 source code and accepts
+no caller-supplied prompt.
+
+The first supported operation is a Claude exact-Head review for the fixed U1
+documentation pilots in `leeshsnu/treeXchange-season2`. The workflow is
+dispatch-only, serial, SHA-bound, path-bound, and fail-closed. It remains inert
+until a user approves and installs every activation value and credential.
+
+## Trust boundary
+
+- The executor fetches only one fixed file from the exact base and Head commits.
+- Repository content, PR text, and model output are treated as untrusted data.
+- Claude receives a fixed prompt and a sanitized two-file review workspace.
+- Claude cannot merge, push, deploy, clear pause, or claim general work.
+- Model output is schema-validated before a trusted publisher posts it.
+- The executor never stores Season 2 source or review inputs as artifacts.
+- Action logs are public, so private file contents and model output are never
+  printed.
+
+## Activation
+
+Activation is intentionally not automated. A user must approve an exact
+executor commit and exact Season 2 policy commit, lock/protect `main`, configure
+the `u1-claude` environment, set its trusted-SHA variable, and install the two
+environment secrets described in [SECURITY.md](SECURITY.md).
+
+Until then, `config/u1-executor.json` is `proposed_paused`, and every dispatch
+stops before any credential or model call is used.
