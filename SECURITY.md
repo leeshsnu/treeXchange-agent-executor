@@ -34,6 +34,19 @@ Before activation:
 
 Any missing, inaccessible, stale, duplicate, or malformed state is a denial.
 
+## Local bootstrap boundary
+
+`scripts/local_claude_bridge.py` uses the user's existing local Claude Code
+login for attended bootstrap reviews. It passes no file, shell, web, MCP, or
+delegation tools to Claude. The exact Git diff is supplied as untrusted prompt
+evidence, and only schema-valid output is persisted. A local ignored ledger
+records call identity, reported usage, and verdict without storing prompt text.
+
+The CLI's `total_cost_usd` value is recorded as reported usage; it must not be
+treated as proof of an additional invoice or as proof that a subscription has
+no limit. Unattended scheduling remains disabled until a hard cap and exact
+activation state are independently verified.
+
 ## Residual administrative risk
 
 The repository owner is also its administrator. Branch and environment

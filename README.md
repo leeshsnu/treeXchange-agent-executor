@@ -29,3 +29,20 @@ environment secrets described in [SECURITY.md](SECURITY.md).
 
 Until then, `config/u1-executor.json` is `proposed_paused`, and every dispatch
 stops before any credential or model call is used.
+
+## Attended local bridge
+
+The repository also contains an attended bootstrap bridge for the user's
+already-authenticated local Claude Code account. It reviews an exact Git commit
+range from one of the two allowlisted treeXchange repositories. The bridge:
+
+- sends the bounded diff through standard input instead of a command argument;
+- starts Claude in non-interactive mode with built-in tools, MCP servers, and
+  user/project settings disabled;
+- requires schema-valid output and never resumes a prior Claude session;
+- rejects credential-like or oversized evidence;
+- keeps a private, ignored call ledger and refuses a duplicate diff or a seventh
+  call.
+
+This bridge proves real Codex-to-Claude invocation before the unattended GitHub
+executor is activated. It does not merge, push, deploy, or clear pause controls.
