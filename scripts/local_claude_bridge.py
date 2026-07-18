@@ -28,6 +28,33 @@ ALLOWED_REPOSITORIES = {
 }
 MAX_DIFF_BYTES = 180_000
 MAX_CALLS = 6
+PREFERRED_MODEL = "claude-fable-5"
+MINIMUM_MODEL = "claude-opus-4-8"
+ALLOWED_MODELS = {PREFERRED_MODEL, MINIMUM_MODEL}
+DISALLOWED_AUTH_ENV = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+    "CLAUDE_CODE_SKIP_MANTLE_AUTH",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CONFIG_DIR",
+)
 REMOTE_RE = re.compile(
     r"^(?:https://github\.com/|git@github\.com:)([^/\s]+/[^/\s]+?)(?:\.git)?$"
 )
@@ -249,10 +276,28 @@ Return only the JSON object required by the supplied schema.
 """
 
 
-def invoke_claude(prompt: str, schema: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
+def require_local_subscription_auth() -> None:
+    configured = [name for name in DISALLOWED_AUTH_ENV if os.environ.get(name)]
+    if configured:
+        fail(
+            "local Claude bridge refuses API-key, alternate-provider, or custom-endpoint environment"
+        )
+
+
+def invoke_claude(
+    prompt: str,
+    schema: dict[str, Any],
+    timeout_seconds: int,
+    model: str = PREFERRED_MODEL,
+) -> dict[str, Any]:
+    require_local_subscription_auth()
+    if model not in ALLOWED_MODELS:
+        fail("Claude model is below or outside the approved Fable 5 / Opus 4.8 policy")
     command = [
         "claude",
         "-p",
+        "--model",
+        model,
         "--output-format",
         "json",
         "--json-schema",
@@ -271,6 +316,8 @@ def invoke_claude(prompt: str, schema: dict[str, Any], timeout_seconds: int) -> 
         "--setting-sources",
         "",
     ]
+    if model == PREFERRED_MODEL:
+        command.extend(["--fallback-model", MINIMUM_MODEL])
     try:
         completed = subprocess.run(
             command,
@@ -330,12 +377,17 @@ def review(args: argparse.Namespace) -> None:
         "base_sha": base_sha,
         "head_sha": head_sha,
         "diff_sha256": diff_sha,
+        "requested_model": args.model,
+        "minimum_model": MINIMUM_MODEL,
         "status": "started",
     }
     ledger_calls = reserve_attempt(ledger_path, attempt)
     try:
         response = invoke_claude(
-            build_prompt(identity, base_sha, head_sha, diff), schema, args.timeout_seconds
+            build_prompt(identity, base_sha, head_sha, diff),
+            schema,
+            args.timeout_seconds,
+            args.model,
         )
     except (BridgeError, u1_executor.GateError):
         finish_attempt(
@@ -355,6 +407,8 @@ def review(args: argparse.Namespace) -> None:
         "base_sha": base_sha,
         "head_sha": head_sha,
         "diff_sha256": diff_sha,
+        "requested_model": args.model,
+        "minimum_model": MINIMUM_MODEL,
         "format": response["format"],
     }
     if response["format"] == "structured":
@@ -415,6 +469,12 @@ def parser() -> argparse.ArgumentParser:
         "--ledger", type=Path, default=Path(".agent-state/claude-call-ledger.json")
     )
     command.add_argument("--timeout-seconds", type=int, default=300)
+    command.add_argument(
+        "--model",
+        choices=sorted(ALLOWED_MODELS),
+        default=PREFERRED_MODEL,
+        help="Fable 5 by default; Opus 4.8 is the only permitted lower tier",
+    )
     command.set_defaults(handler=review)
     return value
 

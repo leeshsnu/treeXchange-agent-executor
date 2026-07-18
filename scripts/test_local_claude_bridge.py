@@ -43,9 +43,16 @@ class BridgeTests(unittest.TestCase):
             stdout=json.dumps({"is_error": False, "structured_output": structured}),
             stderr="",
         )
-        with mock.patch.object(bridge.subprocess, "run", return_value=completed) as run:
-            result = bridge.invoke_claude("bounded", {"type": "object"}, 60)
+        with mock.patch.dict(bridge.os.environ, {}, clear=True):
+            with mock.patch.object(bridge.subprocess, "run", return_value=completed) as run:
+                result = bridge.invoke_claude("bounded", {"type": "object"}, 60)
         command = run.call_args.args[0]
+        self.assertEqual(
+            command[command.index("--model") + 1], bridge.PREFERRED_MODEL
+        )
+        self.assertEqual(
+            command[command.index("--fallback-model") + 1], bridge.MINIMUM_MODEL
+        )
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertEqual(command[command.index("--setting-sources") + 1], "")
         self.assertIn("--strict-mcp-config", command)
@@ -54,6 +61,20 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("--allowedTools", command)
         self.assertEqual(result["result"]["verdict"], "APPROVE")
 
+    def test_api_key_or_custom_endpoint_environment_is_rejected(self):
+        for variable in bridge.DISALLOWED_AUTH_ENV:
+            with self.subTest(variable=variable):
+                with mock.patch.dict(bridge.os.environ, {variable: "configured"}, clear=True):
+                    with self.assertRaises(bridge.BridgeError):
+                        bridge.invoke_claude("bounded", {"type": "object"}, 60)
+
+    def test_only_fable_5_or_opus_4_8_can_be_requested(self):
+        with mock.patch.dict(bridge.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(bridge.BridgeError, "below or outside"):
+                bridge.invoke_claude(
+                    "bounded", {"type": "object"}, 60, "claude-opus-4-5-20251101"
+                )
+
     def test_unstructured_review_is_captured_for_fail_closed_adjudication(self):
         completed = subprocess.CompletedProcess(
             args=[],
@@ -61,8 +82,9 @@ class BridgeTests(unittest.TestCase):
             stdout=json.dumps({"is_error": False, "result": "Useful prose review."}),
             stderr="",
         )
-        with mock.patch.object(bridge.subprocess, "run", return_value=completed):
-            response = bridge.invoke_claude("bounded", {"type": "object"}, 60)
+        with mock.patch.dict(bridge.os.environ, {}, clear=True):
+            with mock.patch.object(bridge.subprocess, "run", return_value=completed):
+                response = bridge.invoke_claude("bounded", {"type": "object"}, 60)
         self.assertEqual(response["format"], "unstructured")
         self.assertEqual(response["raw_review"], "Useful prose review.")
 

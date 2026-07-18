@@ -32,6 +32,14 @@
     "maximum_concurrency": 1,
     "automatic_merge": false
   },
+  "model_policy": {
+    "preferred": "claude-fable-5",
+    "minimum": "claude-opus-4-8",
+    "allow_implicit_default": false,
+    "local_authentication": "claude_code_subscription",
+    "trusted_collaboration_runtime": "omc",
+    "untrusted_review_runtime": "claude_code_no_tools"
+  },
   "action_pins": {
     "actions_checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
     "anthropics_claude_code_action": "3553f84341b92da26052e28acf1aa898f9511f32"

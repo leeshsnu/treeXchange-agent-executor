@@ -128,6 +128,16 @@ def validate_config(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }:
         fail("U1 limits drifted", INVALID)
 
+    if config.get("model_policy") != {
+        "preferred": "claude-fable-5",
+        "minimum": "claude-opus-4-8",
+        "allow_implicit_default": False,
+        "local_authentication": "claude_code_subscription",
+        "trusted_collaboration_runtime": "omc",
+        "untrusted_review_runtime": "claude_code_no_tools",
+    }:
+        fail("Claude model policy drifted", INVALID)
+
     pins = config.get("action_pins")
     if pins != {
         "actions_checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",

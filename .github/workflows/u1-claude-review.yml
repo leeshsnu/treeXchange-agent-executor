@@ -113,6 +113,8 @@ jobs:
           show_full_output: false
           prompt: ${{ env.U1_REVIEW_PROMPT }}
           claude_args: >-
+            --model claude-fable-5
+            --fallback-model claude-opus-4-8
             --max-turns 2
             --tools ""
             --strict-mcp-config
