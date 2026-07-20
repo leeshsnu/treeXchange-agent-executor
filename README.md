@@ -15,9 +15,10 @@ until a user approves and installs every activation value and credential.
 - Repository content, PR text, and model output are treated as untrusted data.
 - Claude receives a fixed prompt containing only delimited sanitized evidence;
   it receives no file, shell, web, GitHub, MCP, or delegation tools.
-- Every Claude invocation names its model explicitly: Fable 5 is preferred and
-  Opus 4.8 is the only allowed fallback/minimum. It never inherits a lower
-  account or CLI default.
+- Every Claude invocation names its model explicitly. Standard implementation
+  and review work uses Opus 4.8; advanced refinement, strategic insight, and
+  design work uses Fable 5, with Opus 4.8 as its only fallback. It never
+  inherits an account or CLI default.
 - Claude cannot merge, push, deploy, clear pause, or claim general work.
 - Model output is schema-validated before a trusted publisher posts it.
 - The executor never stores Season 2 source or review inputs as artifacts.
@@ -46,8 +47,11 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
 - refuses API-key, alternate cloud-provider, alternate config-directory, and
   custom-endpoint environment overrides so the local path uses the default
   Claude Code subscription login;
-- requests `claude-fable-5` explicitly and permits only
-  `claude-opus-4-8` as its lower fallback;
+- routes standard implementation and review work to `claude-opus-4-8`, while
+  advanced refinement, strategic insight, and design profiles use
+  `claude-fable-5` with Opus 4.8 as their only fallback;
+- records the selected task profile and model, and rejects a caller-supplied
+  model that conflicts with the fixed profile;
 - requires schema-valid output and never resumes a prior Claude session;
 - rejects credential-like or oversized evidence;
 - excludes checked-in `reviews/*.json` audit outputs from later model input so

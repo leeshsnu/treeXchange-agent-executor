@@ -31,9 +31,15 @@ REVIEW_ARTIFACT_PATHSPEC = ":(exclude)reviews/*.json"
 MAX_CALLS_PER_WINDOW = 6
 MAX_WINDOWS_PER_WORK_ITEM_PER_DAY = 2
 MAX_CALLS_PER_REPOSITORY_PER_DAY = 12
-PREFERRED_MODEL = "claude-fable-5"
-MINIMUM_MODEL = "claude-opus-4-8"
-ALLOWED_MODELS = {PREFERRED_MODEL, MINIMUM_MODEL}
+DEFAULT_MODEL = "claude-opus-4-8"
+ELEVATED_MODEL = "claude-fable-5"
+MODEL_BY_TASK_PROFILE = {
+    "standard": DEFAULT_MODEL,
+    "advanced": ELEVATED_MODEL,
+    "insight": ELEVATED_MODEL,
+    "design": ELEVATED_MODEL,
+}
+ALLOWED_MODELS = set(MODEL_BY_TASK_PROFILE.values())
 DISALLOWED_AUTH_ENV = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -333,11 +339,20 @@ def require_local_subscription_auth() -> None:
         )
 
 
+def resolve_model(task_profile: str, explicit_model: str | None = None) -> str:
+    model = MODEL_BY_TASK_PROFILE.get(task_profile)
+    if model is None:
+        fail("Claude task profile is outside the approved routing policy", INVALID)
+    if explicit_model is not None and explicit_model != model:
+        fail("explicit Claude model conflicts with the selected task profile", INVALID)
+    return model
+
+
 def invoke_claude(
     prompt: str,
     schema: dict[str, Any],
     timeout_seconds: int,
-    model: str = PREFERRED_MODEL,
+    model: str = DEFAULT_MODEL,
 ) -> dict[str, Any]:
     require_local_subscription_auth()
     if model not in ALLOWED_MODELS:
@@ -365,8 +380,8 @@ def invoke_claude(
         "--setting-sources",
         "",
     ]
-    if model == PREFERRED_MODEL:
-        command.extend(["--fallback-model", MINIMUM_MODEL])
+    if model == ELEVATED_MODEL:
+        command.extend(["--fallback-model", DEFAULT_MODEL])
     try:
         completed = subprocess.run(
             command,
@@ -438,6 +453,7 @@ def review(args: argparse.Namespace) -> None:
     root = Path(__file__).parents[1]
     schema = review_schema(root)
     attempt_id = str(uuid.uuid4())
+    selected_model = resolve_model(args.task_profile, args.model)
     attempt = {
         "attempt_id": attempt_id,
         "called_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -445,8 +461,9 @@ def review(args: argparse.Namespace) -> None:
         "base_sha": base_sha,
         "head_sha": head_sha,
         "diff_sha256": diff_sha,
-        "requested_model": args.model,
-        "minimum_model": MINIMUM_MODEL,
+        "task_profile": args.task_profile,
+        "requested_model": selected_model,
+        "default_model": DEFAULT_MODEL,
         "work_item_id": args.work_item,
         "review_window": args.review_window,
         "status": "started",
@@ -457,7 +474,7 @@ def review(args: argparse.Namespace) -> None:
             build_prompt(identity, base_sha, head_sha, diff),
             schema,
             args.timeout_seconds,
-            args.model,
+            selected_model,
         )
     except (BridgeError, u1_executor.GateError):
         finish_attempt(
@@ -477,8 +494,9 @@ def review(args: argparse.Namespace) -> None:
         "base_sha": base_sha,
         "head_sha": head_sha,
         "diff_sha256": diff_sha,
-        "requested_model": args.model,
-        "minimum_model": MINIMUM_MODEL,
+        "task_profile": args.task_profile,
+        "requested_model": selected_model,
+        "default_model": DEFAULT_MODEL,
         "format": response["format"],
     }
     if response["format"] in {"structured", "validated_json_text"}:
@@ -544,10 +562,16 @@ def parser() -> argparse.ArgumentParser:
     )
     command.add_argument("--timeout-seconds", type=int, default=300)
     command.add_argument(
+        "--task-profile",
+        choices=sorted(MODEL_BY_TASK_PROFILE),
+        default="standard",
+        help="standard uses Opus 4.8; advanced, insight, and design use Fable 5",
+    )
+    command.add_argument(
         "--model",
         choices=sorted(ALLOWED_MODELS),
-        default=PREFERRED_MODEL,
-        help="Fable 5 by default; Opus 4.8 is the only permitted lower tier",
+        default=None,
+        help="optional assertion; it must match the model fixed by --task-profile",
     )
     command.set_defaults(handler=review)
     return value

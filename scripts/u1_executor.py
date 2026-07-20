@@ -129,8 +129,14 @@ def validate_config(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         fail("U1 limits drifted", INVALID)
 
     if config.get("model_policy") != {
-        "preferred": "claude-fable-5",
-        "minimum": "claude-opus-4-8",
+        "default": "claude-opus-4-8",
+        "elevated": "claude-fable-5",
+        "profiles": {
+            "standard": "claude-opus-4-8",
+            "advanced": "claude-fable-5",
+            "insight": "claude-fable-5",
+            "design": "claude-fable-5",
+        },
         "allow_implicit_default": False,
         "local_authentication": "claude_code_subscription",
         "trusted_collaboration_runtime": "omc",
