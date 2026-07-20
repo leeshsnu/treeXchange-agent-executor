@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "1bcc9ca58e386684c16e81f16c3fbb411dbd04ad",
+  "head_sha": "d3cccf260c6a045760bf502325afcfcb827765fb",
+  "diff_sha256": "de8e23255759eebfb523d1f376dfb4763432a1444d7a9dcb8e2399380dc73657",
+  "task_profile": "standard",
+  "requested_model": "claude-opus-4-8",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "CHANGES_REQUESTED",
+    "summary": "The executor is well-designed and fail-closed, but the quality gate references reviews/2026-07-18-executor-pr1-claude-review.json (json.tool) which is not created by this diff, so the CI script and its tests would fail. A recheck TOCTOU gap exists: recheck re-verifies remote state but the model already ran; state can change between prepare and publish only partially mitigated. verify_run_budget uses '>' not '>=' allowing an off-by-one (total_limit+1 runs pass since current run is counted). These block approval.",
+    "findings": [
+      {
+        "severity": "P1",
+        "status": "open",
+        "finding": "quality-gate.sh runs `python3 -m json.tool reviews/2026-07-18-executor-pr1-claude-review.json` but this diff only adds reviews/2026-07-18-executor-pr1-codex-adjudication.md; the JSON file is absent from the diff, so CI fail-closed tests error at that line. The security-checks job cannot pass on this Head as presented."
+      },
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "verify_run_budget compares len(current_runs) > total_limit and pilot count > pilot_limit. The dispatching run itself is included in the ledger, so exactly total_limit+1 dispatched runs (or pilot_limit+1) are permitted before denial, exceeding the stated maximum_claude_reviews_total=6 / per_pilot=2 caps by one call."
+      },
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "Workflow-level budget enforcement relies on GitHub Actions run listing eventual consistency. A concurrent second dispatch (concurrency group serializes review job, but paused-gate/prepare of a second run may race) could both read a stale run count. No atomic reservation binds the run count to prevent double-spend of a Claude call, unlike the local bridge's file lock."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "append_github_env writes the multiline prompt into GITHUB_ENV; the delimiter is derived from sha256(value), but if evidence content contained that exact 64-hex string prefixed by TREEXCHANGE_ it is rejected only by substring check. Acceptable, but env-var prompt injection surface remains larger than passing via file input."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "No tools granted to Claude in either lane; API-key/alternate-provider env rejected; secrets scanned; duplicate-key JSON forced to CHANGES_REQUESTED; reruns denied at attempt>1; fork PRs and stale Head rejected."
+      }
+    ],
+    "verification": [
+      "Local bridge and workflow pass no file/shell/web/MCP tools to Claude and reject disallowed auth env vars.",
+      "validate_result enforces APPROVE cannot carry open P0/P1/P2 and strips injected structured-field markers.",
+      "reserve_attempt uses an OS file lock; concurrency test asserts exactly one of eight duplicate reservations succeeds.",
+      "Workflow guards both jobs with run_attempt==1 and ref main; rerun and fork PRs are denied.",
+      "validate_config pins action SHAs, model policy, limits, and forbidden effects against drift."
+    ],
+    "requirement_coverage": [
+      "Credential exposure: tokens confined to environment secrets; logs suppress structured output; secret patterns scanned.",
+      "Budget bypass: caps enforced via ledger and run-count, though off-by-one and race gaps remain (see findings).",
+      "Fail-closed: paused config, missing/stale/duplicate state, and non-zero Claude exit all deny.",
+      "Unsafe automation: no merge/push/deploy; publish only posts a validated comment via read-scoped token."
+    ],
+    "residual_risk": [
+      "Administrator can alter branch/environment protection; mitigated only by user-approved SHA pinning, not cryptographically.",
+      "Public dispatch metadata exposes PR/Head/request IDs unless public_dispatch_metadata_accepted is explicitly set.",
+      "Off-by-one budget and Actions-listing race allow at most one extra Claude call under contention."
+    ]
+  }
+}
