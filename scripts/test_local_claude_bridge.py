@@ -22,6 +22,11 @@ SPEC.loader.exec_module(bridge)
 
 
 class BridgeTests(unittest.TestCase):
+    def test_review_diff_uses_standard_bounded_context(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn('"--unified=3"', source)
+        self.assertNotIn('"--unified=40"', source)
+
     def test_prompt_marks_diff_as_untrusted(self):
         prompt = bridge.build_prompt("leeshsnu/treeXchange-agent-executor", "a" * 40, "b" * 40, "diff")
         self.assertIn("BEGIN_UNTRUSTED_DIFF_", prompt)
