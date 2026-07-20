@@ -54,8 +54,10 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
   reviewed, preventing a private Season 2 review from crossing into this public
   executor repository;
 - keeps a private, ignored call ledger, records failed attempts before invoking
-  Claude, serializes reservations with an OS file lock, and refuses a duplicate
-  diff or a seventh call.
+  Claude, serializes reservations with an OS file lock, and refuses duplicate
+  diffs. Calls are bounded to 6 per work-item review window, 2 new windows per
+  work item per UTC day, and 12 calls per repository per UTC day. Reaching a
+  cap pauses only that review lane; it is not a Claude subscription limit.
 
 This bridge proves real Codex-to-Claude invocation before the unattended GitHub
 executor is activated. It does not merge, push, deploy, or clear pause controls.

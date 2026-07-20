@@ -27,7 +27,9 @@ ALLOWED_REPOSITORIES = {
     "leeshsnu/treeXchange-season2",
 }
 MAX_DIFF_BYTES = 180_000
-MAX_CALLS = 6
+MAX_CALLS_PER_WINDOW = 6
+MAX_WINDOWS_PER_WORK_ITEM_PER_DAY = 2
+MAX_CALLS_PER_REPOSITORY_PER_DAY = 12
 PREFERRED_MODEL = "claude-fable-5"
 MINIMUM_MODEL = "claude-opus-4-8"
 ALLOWED_MODELS = {PREFERRED_MODEL, MINIMUM_MODEL}
@@ -58,6 +60,8 @@ DISALLOWED_AUTH_ENV = (
 REMOTE_RE = re.compile(
     r"^(?:https://github\.com/|git@github\.com:)([^/\s]+/[^/\s]+?)(?:\.git)?$"
 )
+WORK_ITEM_RE = re.compile(r"^[A-Z][A-Z0-9-]{1,31}$")
+REVIEW_WINDOW_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{7,63}$")
 
 
 class BridgeError(Exception):
@@ -191,11 +195,36 @@ def locked_ledger(path: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def reserve_attempt(path: Path, attempt: dict[str, Any]) -> int:
+def reserve_attempt(path: Path, attempt: dict[str, Any]) -> dict[str, int]:
     with locked_ledger(path):
         ledger = load_ledger(path)
-        if len(ledger["calls"]) >= MAX_CALLS:
-            fail("local Claude call cap has been reached")
+        called_day = attempt["called_at"][:10]
+        daily_calls = [
+            call for call in ledger["calls"]
+            if isinstance(call.get("called_at"), str) and call["called_at"][:10] == called_day
+        ]
+        if len(daily_calls) >= MAX_CALLS_PER_REPOSITORY_PER_DAY:
+            fail("repository daily Claude call cap has been reached")
+        window_calls = [
+            call for call in ledger["calls"]
+            if call.get("review_window") == attempt["review_window"]
+        ]
+        if len(window_calls) >= MAX_CALLS_PER_WINDOW:
+            fail("review window Claude call cap has been reached")
+        if any(
+            call.get("work_item_id") != attempt["work_item_id"]
+            or call.get("base_sha") != attempt["base_sha"]
+            or call.get("repository") != attempt["repository"]
+            for call in window_calls
+        ):
+            fail("review window is already bound to another work item or base")
+        work_item_windows = {
+            call.get("review_window") for call in daily_calls
+            if call.get("work_item_id") == attempt["work_item_id"]
+            and isinstance(call.get("review_window"), str)
+        }
+        if attempt["review_window"] not in work_item_windows and len(work_item_windows) >= MAX_WINDOWS_PER_WORK_ITEM_PER_DAY:
+            fail("work item daily review-window cap has been reached")
         if any(
             call.get("diff_sha256") == attempt["diff_sha256"]
             for call in ledger["calls"]
@@ -203,7 +232,11 @@ def reserve_attempt(path: Path, attempt: dict[str, Any]) -> int:
             fail("this exact review diff has already consumed a Claude call")
         ledger["calls"].append(attempt)
         save_private_json(path, ledger)
-        return len(ledger["calls"])
+        return {
+            "ledger_calls": len(ledger["calls"]),
+            "window_calls": len(window_calls) + 1,
+            "daily_calls": len(daily_calls) + 1,
+        }
 
 
 def finish_attempt(path: Path, attempt_id: str, updates: dict[str, Any]) -> int:
@@ -273,6 +306,8 @@ Required final object shape (these exact six top-level keys, no others):
   "residual_risk": ["remaining bounded risk, or none"]
 }}
 Do not use decision, id, title, confidence, category, location, evidence, impact, or recommendation fields.
+Keep summary and every finding under 700 characters. Keep every other string under 300 characters.
+Use at most 8 findings and at most 6 items in each remaining array.
 
 Repository: {identity}
 Base SHA: {base_sha}
@@ -409,9 +444,11 @@ def review(args: argparse.Namespace) -> None:
         "diff_sha256": diff_sha,
         "requested_model": args.model,
         "minimum_model": MINIMUM_MODEL,
+        "work_item_id": args.work_item,
+        "review_window": args.review_window,
         "status": "started",
     }
-    ledger_calls = reserve_attempt(ledger_path, attempt)
+    reservation = reserve_attempt(ledger_path, attempt)
     try:
         response = invoke_claude(
             build_prompt(identity, base_sha, head_sha, diff),
@@ -480,6 +517,8 @@ def review(args: argparse.Namespace) -> None:
                 "head_sha": head_sha,
                 "output": str(output_path),
                 "ledger_calls": ledger_calls,
+                "window_calls": reservation["window_calls"],
+                "daily_calls": reservation["daily_calls"],
                 "total_cost_usd_reported": wrapper.get("total_cost_usd"),
             },
             separators=(",", ":"),
@@ -494,6 +533,8 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--repo", type=Path, required=True)
     command.add_argument("--base", default="origin/main")
     command.add_argument("--head", default="HEAD")
+    command.add_argument("--work-item", required=True)
+    command.add_argument("--review-window", required=True)
     command.add_argument("--output", type=Path, required=True)
     command.add_argument(
         "--ledger", type=Path, default=Path(".agent-state/claude-call-ledger.json")
@@ -513,6 +554,12 @@ def main() -> int:
     args = parser().parse_args()
     if not 30 <= args.timeout_seconds <= 600:
         print("DENY: timeout must be between 30 and 600 seconds", file=sys.stderr)
+        return INVALID
+    if not WORK_ITEM_RE.fullmatch(args.work_item):
+        print("DENY: work item id is invalid", file=sys.stderr)
+        return INVALID
+    if not REVIEW_WINDOW_RE.fullmatch(args.review_window):
+        print("DENY: review window id is invalid", file=sys.stderr)
         return INVALID
     try:
         args.handler(args)
