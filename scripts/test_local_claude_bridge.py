@@ -60,6 +60,7 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("call StructuredOutput", prompt)
         self.assertIn('"verdict": "APPROVE or CHANGES_REQUESTED"', prompt)
         self.assertIn("these exact six top-level keys", prompt)
+        self.assertIn("exactly severity, status, and finding", prompt)
         self.assertIn("every finding under 700 characters", prompt)
 
     def test_no_tools_or_settings_are_available_to_claude(self):
@@ -118,6 +119,11 @@ class BridgeTests(unittest.TestCase):
     def test_explicit_model_must_match_task_profile(self):
         with self.assertRaisesRegex(bridge.BridgeError, "conflicts"):
             bridge.resolve_model("standard", bridge.ELEVATED_MODEL)
+
+    def test_explicit_model_matching_task_profile_is_accepted(self):
+        self.assertEqual(
+            bridge.resolve_model("standard", bridge.DEFAULT_MODEL), bridge.DEFAULT_MODEL
+        )
 
     def test_elevated_model_can_fall_back_only_to_default(self):
         completed = subprocess.CompletedProcess(

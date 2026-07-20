@@ -281,6 +281,23 @@ class SourceBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(u1.GateError, "not yet visible"):
                 u1.verify_run_budget(config, "redacted", "U1-P1", "100")
 
+    def test_budget_allows_visible_current_run_within_limits(self):
+        config = active_config()
+        runs = [
+            {
+                "id": 100,
+                "created_at": "2026-07-18T09:00:00Z",
+                "event": "workflow_dispatch",
+                "display_title": "U1 Claude review | U1-P1",
+            }
+        ]
+        with mock.patch.object(
+            u1,
+            "api_json",
+            return_value={"total_count": len(runs), "workflow_runs": runs},
+        ):
+            u1.verify_run_budget(config, "redacted", "U1-P1", "100")
+
 
 class StaticWorkflowTests(unittest.TestCase):
     def setUp(self):
