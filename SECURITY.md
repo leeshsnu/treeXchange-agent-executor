@@ -33,10 +33,11 @@ Before activation:
    until the final attended activation decision.
 7. Verify that the repository does not define the `ACTIONS_STEP_DEBUG` secret
    and set `actions_step_debug_disabled_verified` only after that inspection.
-8. The public dispatch currently exposes PR, Head SHA, reservation, and request
-   identifiers as Actions event metadata. Keep
-   `public_dispatch_metadata_accepted` false unless the user explicitly accepts
-   this disclosure for a bounded pilot; an opaque private broker is preferred.
+8. Verify that public dispatch exposes only the opaque numeric reservation
+   ticket. Pilot, PR, Head SHA, request ID, and source paths must be recovered
+   from the exact private reservation artifact inside the protected job. Set
+   `opaque_dispatch_verified` true only after inspecting the approved executor
+   SHA and its workflow inputs.
 
 Any missing, inaccessible, stale, duplicate, or malformed state is a denial.
 

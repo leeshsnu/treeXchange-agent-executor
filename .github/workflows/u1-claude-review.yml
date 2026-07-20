@@ -1,32 +1,13 @@
 name: U1 Claude exact-Head review
-run-name: U1 Claude review | ${{ inputs.pilot_id }}
+run-name: U1 Claude review
 
 on:
   workflow_dispatch:
     inputs:
-      pilot_id:
-        description: Fixed U1 pilot ID
-        required: true
-        type: choice
-        options:
-          - U1-P1
-          - U1-P3
-      pr_number:
-        description: Exact Season 2 pull request number
+      ticket_id:
+        description: Opaque live Season 2 reservation ticket
         required: true
         type: number
-      head_sha:
-        description: Exact full lowercase Season 2 Head SHA
-        required: true
-        type: string
-      reservation_run_id:
-        description: Live Season 2 reservation workflow database ID
-        required: true
-        type: number
-      request_id:
-        description: Opaque reservation request ID
-        required: true
-        type: string
 
 permissions:
   actions: read
@@ -50,20 +31,11 @@ jobs:
           persist-credentials: false
       - name: Validate packet and bounded dispatch
         env:
-          PILOT_ID: ${{ inputs.pilot_id }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-          HEAD_SHA: ${{ inputs.head_sha }}
-          RESERVATION_RUN_ID: ${{ inputs.reservation_run_id }}
-          REQUEST_ID: ${{ inputs.request_id }}
+          TICKET_ID: ${{ inputs.ticket_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           python3 scripts/u1_executor.py validate-config
-          python3 scripts/u1_executor.py validate-dispatch \
-            --pilot-id "$PILOT_ID" \
-            --pr-number "$PR_NUMBER" \
-            --head-sha "$HEAD_SHA" \
-            --reservation-run-id "$RESERVATION_RUN_ID" \
-            --request-id "$REQUEST_ID"
+          python3 scripts/u1_executor.py validate-ticket --ticket-id "$TICKET_ID"
 
   review:
     needs: paused-gate
@@ -72,11 +44,7 @@ jobs:
     timeout-minutes: 20
     environment: u1-claude
     env:
-      PILOT_ID: ${{ inputs.pilot_id }}
-      PR_NUMBER: ${{ inputs.pr_number }}
-      HEAD_SHA: ${{ inputs.head_sha }}
-      RESERVATION_RUN_ID: ${{ inputs.reservation_run_id }}
-      REQUEST_ID: ${{ inputs.request_id }}
+      TICKET_ID: ${{ inputs.ticket_id }}
       GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
     steps:
       - name: Checkout exact trusted executor without credentials
@@ -92,11 +60,7 @@ jobs:
           U1_EXECUTOR_TRUSTED_SHA: ${{ vars.U1_EXECUTOR_TRUSTED_SHA }}
         run: |
           python3 scripts/u1_executor.py prepare \
-            --pilot-id "$PILOT_ID" \
-            --pr-number "$PR_NUMBER" \
-            --head-sha "$HEAD_SHA" \
-            --reservation-run-id "$RESERVATION_RUN_ID" \
-            --request-id "$REQUEST_ID" \
+            --ticket-id "$TICKET_ID" \
             --output-dir review_input
       - name: Embed sanitized evidence without granting file tools
         run: >-
@@ -131,11 +95,7 @@ jobs:
           U1_EXECUTOR_TRUSTED_SHA: ${{ vars.U1_EXECUTOR_TRUSTED_SHA }}
         run: |
           python3 scripts/u1_executor.py recheck \
-            --pilot-id "$PILOT_ID" \
-            --pr-number "$PR_NUMBER" \
-            --head-sha "$HEAD_SHA" \
-            --reservation-run-id "$RESERVATION_RUN_ID" \
-            --request-id "$REQUEST_ID" \
+            --ticket-id "$TICKET_ID" \
             --metadata review_input/METADATA.json
       - name: Render trusted Agent Review v2
         run: |
@@ -150,11 +110,7 @@ jobs:
           U1_EXECUTOR_TRUSTED_SHA: ${{ vars.U1_EXECUTOR_TRUSTED_SHA }}
         run: |
           python3 scripts/u1_executor.py publish \
-            --pilot-id "$PILOT_ID" \
-            --pr-number "$PR_NUMBER" \
-            --head-sha "$HEAD_SHA" \
-            --reservation-run-id "$RESERVATION_RUN_ID" \
-            --request-id "$REQUEST_ID" \
+            --ticket-id "$TICKET_ID" \
             --metadata review_input/METADATA.json \
             --comment review-comment.md
       - name: Remove private review material from the runner

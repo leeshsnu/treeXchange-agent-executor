@@ -19,11 +19,18 @@ until a user approves and installs every activation value and credential.
   and review work uses Opus 4.8; advanced refinement, strategic insight, and
   design work uses Fable 5, with Opus 4.8 as its only fallback. It never
   inherits an account or CLI default.
+- The unattended U1 exact-Head review is a standard review and therefore always
+  uses Opus 4.8. Fable 5 is not used by this protected workflow. Profile routing
+  is configured policy; protected-runtime availability must be verified before
+  any future Fable workflow is activated.
 - Claude cannot merge, push, deploy, clear pause, or claim general work.
 - Model output is schema-validated before a trusted publisher posts it.
 - The executor never stores Season 2 source or review inputs as artifacts.
 - Action logs are public, so private file contents and model output are never
   printed.
+- Public dispatch accepts only one opaque reservation ticket. Pilot, PR, Head,
+  and request details are recovered from a bounded private reservation artifact
+  only after the protected environment admits the job.
 
 ## Activation
 
