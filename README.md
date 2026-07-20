@@ -30,7 +30,9 @@ until a user approves and installs every activation value and credential.
   printed.
 - Public dispatch accepts only one opaque reservation ticket. Pilot, PR, Head,
   and request details are recovered from a bounded private reservation artifact
-  only after the protected environment admits the job.
+  only after the protected environment admits the job. The public ledger records
+  that opaque ticket and rejects reuse; private reservation counters enforce the
+  per-pilot limit across distinct tickets.
 
 ## Activation
 

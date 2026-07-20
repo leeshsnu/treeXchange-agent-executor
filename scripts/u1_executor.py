@@ -561,7 +561,7 @@ def decode_content(token: str, path: str, ref: str) -> str:
 
 
 def verify_run_budget(
-    config: dict[str, Any], executor_token: str, current_run_id: str
+    config: dict[str, Any], executor_token: str, ticket_id: int, current_run_id: str
 ) -> None:
     if not re.fullmatch(r"[1-9][0-9]*", current_run_id):
         fail("current workflow run identity is unavailable")
@@ -589,8 +589,12 @@ def verify_run_budget(
     total_limit = config["limits"]["maximum_claude_reviews_total"]
     if len(current_runs) > total_limit:
         fail("total Claude review budget is exhausted")
-    if any(run.get("display_title") != "U1 Claude review" for run in current_runs):
+    opaque_title = re.compile(r"^U1 Claude review \| ticket [1-9][0-9]*$")
+    if any(not opaque_title.fullmatch(str(run.get("display_title", ""))) for run in current_runs):
         fail("executor workflow ledger contains non-opaque run metadata")
+    expected_title = f"U1 Claude review | ticket {ticket_id}"
+    if sum(run.get("display_title") == expected_title for run in current_runs) != 1:
+        fail("opaque reservation ticket has already been used")
 
 
 def verify_remote_state(
@@ -970,6 +974,7 @@ def main() -> int:
         verify_run_budget(
             config,
             executor_token,
+            args.ticket_id,
             os.environ.get("GITHUB_RUN_ID", ""),
         )
         metadata = verify_remote_state(config, pilot, dispatch_args, source_token)

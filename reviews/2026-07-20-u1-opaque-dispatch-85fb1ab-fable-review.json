@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "907cec85d6cf10b36f8c988e476b8dd2ab02c428",
+  "head_sha": "85fb1ab5206275da68d2c5afdb7ca1d2c7c366ca",
+  "diff_sha256": "c06022f65d37749733f86d0544eeac1173731096397d8b810a49ccd9648f5046",
+  "task_profile": "advanced",
+  "requested_model": "claude-fable-5",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "CHANGES_REQUESTED",
+    "summary": "The opaque-ticket redesign genuinely minimizes public dispatch metadata and adds bounded, fail-closed artifact parsing with redirect/auth-stripping protections. However, per-pilot budget enforcement moved from the executor's independent public ledger to counters inside the reservation artifact, and nothing marks a ticket as consumed: while the reservation run stays in_progress and the lease is unexpired, the same ticket can be replayed to run multiple reviews for one pilot, bounded only by the total cap. One renamed test may pass for the wrong reason. Open P2 blocks approval.",
+    "findings": [
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "Ticket replay bypasses the per-pilot budget. verify_run_budget no longer counts per-pilot runs; per-pilot limits now rely on usage_ledger counters baked into the reservation artifact, which do not increment when the executor runs. resolve_dispatch_ticket never marks a ticket consumed, so any actor able to dispatch the executor can reuse one ticket for multiple reviews of the same pilot while the reservation run is in_progress and lease.expires_at has not passed. Impact is bounded by maximum_claude_reviews_total and the lease window, but the stated per-pilot safeguard is no longer independently enforced."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "test_public_ledger_rejects_non_opaque_run_name uses bare assertRaises(GateError) with current_run_id '1'. verify_run_budget checks current-run visibility before the non-opaque display_title check, so the test can pass via the 'not yet visible' branch instead of the claimed non-opaque-metadata rejection. It should assert the specific error message like the adjacent tests do; as written it does not prove its claim."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "Publish now posts the review comment via source_token in the unified command path, replacing the removed dedicated publish block that explicitly read SEASON2_REVIEW_TOKEN. The definition of source_token is outside the diff, so the diff alone cannot confirm publish still uses the intended minimally-scoped review token rather than a broader credential."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "README asserts the U1 review 'always uses Opus 4.8' and that Fable 5 is not used, but this diff contains no model-selection enforcement; the claim rests on configuration outside the change. The README itself concedes protected-runtime availability is unverified, so this is documentation, not a proven control."
+      }
+    ],
+    "verification": [
+      "Public dispatch now exposes only a numeric ticket_id; run-name and inputs no longer carry pilot, PR, Head SHA, or request ID, and a static test asserts this.",
+      "api_bytes pins the initial host to api.github.com, rejects non-HTTPS redirects, strips the Authorization header on redirect, and enforces a 100KB body cap.",
+      "parse_reservation_archive requires exactly one named, unencrypted, <=50KB JSON member and fails closed on malformed zip, encoding, or non-object JSON.",
+      "resolve_dispatch_ticket binds the ticket to a live first-attempt workflow_dispatch reservation run by the expected actor, on main at the trusted policy SHA, within the approved activation window, with matching display title and artifact name.",
+      "validate_reservation_context cross-checks pilot, branch, issue, paths, side effects, policy binding, GitHub snapshot, lease binding to the ticket, and lease expiry; all validation failures raise GateError (deny)."
+    ],
+    "requirement_coverage": [
+      "Opaque single-ticket public dispatch: covered and statically tested.",
+      "Fail-closed validation of ticket, run, artifact, and reservation context: covered.",
+      "Total Claude review budget via the executor's public run ledger with current-run visibility requirement: covered.",
+      "Per-pilot budget: only partially covered; enforcement is now derived from reservation-time artifact counters and is bypassable by ticket replay (P2).",
+      "Credential non-exposure on artifact download redirects: covered.",
+      "Metadata rebinding on recheck and publish (live state must equal model-bound metadata): covered."
+    ],
+    "residual_risk": [
+      "Single ticket reusable for multiple executor runs within the lease window and while the reservation run is in_progress; per-pilot cap not independently enforced (open P2).",
+      "Executor trusts reservation artifact content entirely; correctness of usage counters and GitHub snapshot depends on the reservation workflow at the pinned policy SHA.",
+      "Token used for the publish POST cannot be scope-verified from this diff.",
+      "Model routing claims in README are unenforced by code in this change."
+    ]
+  }
+}

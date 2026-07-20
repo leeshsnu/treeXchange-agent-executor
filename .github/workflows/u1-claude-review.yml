@@ -1,5 +1,5 @@
 name: U1 Claude exact-Head review
-run-name: U1 Claude review
+run-name: U1 Claude review | ticket ${{ inputs.ticket_id }}
 
 on:
   workflow_dispatch:
