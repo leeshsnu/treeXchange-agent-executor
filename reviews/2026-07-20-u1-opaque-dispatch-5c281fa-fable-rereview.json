@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "907cec85d6cf10b36f8c988e476b8dd2ab02c428",
+  "head_sha": "5c281fae9805464a00092912c43d6636798ecd6a",
+  "diff_sha256": "0b7f372eb563ed2f058fc909ab234df187348cc8b95b9cacc86adf96765a3e38",
+  "task_profile": "advanced",
+  "requested_model": "claude-fable-5",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "APPROVE",
+    "summary": "The change replaces five public dispatch inputs with a single opaque ticket, recovers pilot/PR/Head/request from a bounded private reservation artifact inside the protected job, and adds public-ledger replay rejection. Validation is fail-closed throughout: strict zip bounds (one named member, 50KB/100KB caps, no encryption), HTTPS-only artifact redirects with Authorization stripped, exact-match binding of run title, artifact name, policy SHA, lease, and ticket. Remaining concerns are bounded P3 items (per-pilot limit now trusts reservation-workflow counters; eventually-consistent reuse ledger race), so no open P0-P2 blocks approval.",
+    "findings": [
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "Per-pilot budget enforcement moved from the executor's independent public run-title count to trusting used_by_family_and_pilot_including_current inside the reservation artifact (validate_reservation_context). The README claim that private counters enforce the per-pilot limit across tickets cannot be proven from this diff; correctness depends on the reservation workflow, which is not included. Bounded because the artifact is only accepted from an in_progress run at the trusted policy SHA dispatched by the fixed actor, and the total cap is still publicly enforced."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "Ticket-reuse rejection in verify_run_budget counts display_title matches in the eventually consistent Actions run listing. Two near-simultaneous dispatches with the same ticket could each see only themselves (count == 1) and both proceed; no concurrency group serializing executor runs appears in this diff. Bounded: dispatch requires repo write access, the check repeats at prepare/recheck/publish, and dual visibility fails both runs closed."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "verify_run_budget denies if ANY run in the queried window has a non-opaque title, including pre-migration legacy runs ('executor workflow ledger contains non-opaque run metadata'). This is fail-closed but can block all reviews until the window excludes legacy runs. Availability only, no security impact."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "resolve_dispatch_ticket requires the reservation run to be status in_progress at prepare, recheck, and publish. A reservation run that finishes or a lease that expires mid-review (executor timeout is 20 minutes) aborts publish. Fail-closed availability constraint; operators must keep reservation lifetime longer than the review job."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "Credential handling on artifact download is sound: api_bytes pins the initial host to api.github.com, _SafeRedirectHandler rejects non-HTTPS redirects and removes the Authorization header before following, response size is capped at 100KB, and GateError from the handler propagates fail-closed past the download except clause."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "Replay and boundary tests prove their claims: test_reused_opaque_ticket_is_denied asserts denial on a second ticket-42 run; test_reservation_archive_rejects_additional_members proves single-member enforcement; test_private_reservation_ledger_enforces_per_pilot_budget proves counter denial; static workflow tests assert no pilot_id/pr_number/head_sha/request_id inputs remain."
+      }
+    ],
+    "verification": [
+      "Public workflow now accepts only ticket_id; pilot, PR, Head SHA, and request ID inputs and env bindings are fully removed, confirmed by static workflow tests.",
+      "Reservation zip parsing is bounded: exactly one member named u1-reservation.json, 50KB member / 100KB download caps, encryption flag rejected, strict UTF-8 JSON object required.",
+      "Reservation context is exact-matched against the fixed packet: pilot, branch, issue, allowed path, side effects, policy SHA binding, GitHub snapshot, and lease bound to the ticket via reservation_run_database_id and run_id.",
+      "Public ledger enforces exactly-once use of each opaque ticket title and rejects any non-opaque run metadata; current-run visibility is still required before counting.",
+      "Publish path retains marker, Verdict, and Head SHA provenance checks and the live-vs-model-bound metadata equality gate before posting.",
+      "Config gate renamed to opaque_dispatch_verified and remains false by default; paused-state ticket validation denies before identity or credentials (tested)."
+    ],
+    "requirement_coverage": [
+      "Opaque public dispatch: only a numeric ticket appears in public event metadata and run-name.",
+      "Replay rejection: reused tickets denied via public ledger count; reruns still blocked by run-attempt guard.",
+      "Fail-closed behavior: every parse, download, mismatch, expiry, and pagination gap raises GateError denial.",
+      "Budget enforcement: total cap publicly counted; per-pilot cap enforced from reservation counters including current.",
+      "Credential protection: token never forwarded on artifact redirects; HTTPS-only redirect chain.",
+      "Live final recheck before publish preserved with ticket-based resolution."
+    ],
+    "residual_risk": [
+      "Per-pilot limit integrity depends on the reservation workflow (outside this diff) producing honest counters; executor cannot cross-check across distinct tickets.",
+      "Eventual consistency of the Actions run listing leaves a narrow concurrent-duplicate window, bounded by write-access requirements and repeated rechecks.",
+      "Strict opaque-title ledger check can deny service while legacy-titled runs remain in the query window.",
+      "PR number is resolved live by branch rather than pinned in the artifact; bounded by exactly-one-open-PR requirement and unchanged verify_remote_state Head binding."
+    ]
+  }
+}

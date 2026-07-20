@@ -32,7 +32,8 @@ until a user approves and installs every activation value and credential.
   and request details are recovered from a bounded private reservation artifact
   only after the protected environment admits the job. The public ledger records
   that opaque ticket and rejects reuse; private reservation counters enforce the
-  per-pilot limit across distinct tickets.
+  per-pilot limit across distinct tickets. Workflow-level global concurrency
+  serializes executor runs so two copies cannot consume one ticket concurrently.
 
 ## Activation
 
