@@ -50,6 +50,9 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
   `claude-opus-4-8` as its lower fallback;
 - requires schema-valid output and never resumes a prior Claude session;
 - rejects credential-like or oversized evidence;
+- excludes checked-in `reviews/*.json` audit outputs from later model input so
+  they cannot inflate or bias an independent follow-up review, while keeping
+  implementation code, configuration, documentation and tests in scope;
 - confines the review output and ignored ledger to the repository being
   reviewed, preventing a private Season 2 review from crossing into this public
   executor repository;

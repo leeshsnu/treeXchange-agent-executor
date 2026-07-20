@@ -49,6 +49,8 @@ evidence, and only schema-valid output is persisted. A local ignored ledger
 records call identity, reported usage, and verdict without storing prompt text.
 The bridge verifies that the ledger is genuinely ignored by the reviewed Git
 repository and serializes call reservations with an OS file lock.
+Checked-in `reviews/*.json` outputs remain Git audit evidence but are excluded
+from later model input; all implementation-bearing paths remain reviewable.
 If the CLI omits `structured_output`, only an exact single JSON object with no
 duplicate keys that passes the same strict review schema is machine-valid.
 Prose, Markdown, surrounding text, duplicate-key JSON or schema drift is
