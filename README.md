@@ -59,9 +59,11 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
 
 This bridge proves real Codex-to-Claude invocation before the unattended GitHub
 executor is activated. It does not merge, push, deploy, or clear pause controls.
-If the installed Claude Code version returns prose instead of StructuredOutput,
-the bridge preserves the feedback but forces `CHANGES_REQUESTED`; unstructured
-output can never authorize continuation or approval.
+If the installed Claude Code version omits `structured_output`, the bridge can
+recover only a response that is exactly one JSON object, has no duplicate keys,
+and passes the same strict review schema. Prose, Markdown, surrounding text,
+duplicate-key JSON and schema drift are preserved as feedback but force
+`CHANGES_REQUESTED`; unstructured output can never authorize continuation.
 
 ## OMC collaboration lane
 

@@ -49,8 +49,10 @@ evidence, and only schema-valid output is persisted. A local ignored ledger
 records call identity, reported usage, and verdict without storing prompt text.
 The bridge verifies that the ledger is genuinely ignored by the reviewed Git
 repository and serializes call reservations with an OS file lock.
-If the CLI returns prose instead of StructuredOutput, the prose is retained as
-feedback but the trusted verdict is forced to `CHANGES_REQUESTED`.
+If the CLI omits `structured_output`, only an exact single JSON object with no
+duplicate keys that passes the same strict review schema is machine-valid.
+Prose, Markdown, surrounding text, duplicate-key JSON or schema drift is
+retained as feedback but forces the trusted verdict to `CHANGES_REQUESTED`.
 
 The CLI's `total_cost_usd` value is recorded as reported usage; it must not be
 treated as proof of an additional invoice or as proof that a subscription has
