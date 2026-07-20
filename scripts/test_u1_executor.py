@@ -84,7 +84,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_model_policy_exact_contract_rejects_drift(self):
         config = paused_config()
-        config["model_policy"]["minimum"] = "claude-opus-4-5-20251101"
+        config["model_policy"]["default"] = "claude-opus-4-5-20251101"
         with self.assertRaises(u1.GateError):
             u1.validate_config(config)
 
@@ -290,8 +290,8 @@ class StaticWorkflowTests(unittest.TestCase):
 
     def test_model_has_no_read_or_other_tools(self):
         self.assertIn("prompt: ${{ env.U1_REVIEW_PROMPT }}", self.workflow)
-        self.assertIn("--model claude-fable-5", self.workflow)
-        self.assertIn("--fallback-model claude-opus-4-8", self.workflow)
+        self.assertIn("--model claude-opus-4-8", self.workflow)
+        self.assertNotIn("--fallback-model", self.workflow)
         self.assertIn('--tools ""', self.workflow)
         self.assertNotIn("--allowedTools", self.workflow)
         self.assertRegex(self.workflow, r"--disallowedTools[^\n]*Read")

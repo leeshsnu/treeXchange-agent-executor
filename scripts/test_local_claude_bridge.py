@@ -82,11 +82,9 @@ class BridgeTests(unittest.TestCase):
                 result = bridge.invoke_claude("bounded", {"type": "object"}, 60)
         command = run.call_args.args[0]
         self.assertEqual(
-            command[command.index("--model") + 1], bridge.PREFERRED_MODEL
+            command[command.index("--model") + 1], bridge.DEFAULT_MODEL
         )
-        self.assertEqual(
-            command[command.index("--fallback-model") + 1], bridge.MINIMUM_MODEL
-        )
+        self.assertNotIn("--fallback-model", command)
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertEqual(command[command.index("--setting-sources") + 1], "")
         self.assertIn("--strict-mcp-config", command)
@@ -108,6 +106,47 @@ class BridgeTests(unittest.TestCase):
                 bridge.invoke_claude(
                     "bounded", {"type": "object"}, 60, "claude-opus-4-5-20251101"
                 )
+
+    def test_task_profiles_route_models_deterministically(self):
+        self.assertEqual(bridge.resolve_model("standard"), bridge.DEFAULT_MODEL)
+        for profile in ("advanced", "insight", "design"):
+            with self.subTest(profile=profile):
+                self.assertEqual(
+                    bridge.resolve_model(profile), bridge.ELEVATED_MODEL
+                )
+
+    def test_explicit_model_must_match_task_profile(self):
+        with self.assertRaisesRegex(bridge.BridgeError, "conflicts"):
+            bridge.resolve_model("standard", bridge.ELEVATED_MODEL)
+
+    def test_elevated_model_can_fall_back_only_to_default(self):
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "is_error": False,
+                    "structured_output": {
+                        "verdict": "APPROVE",
+                        "summary": "Bounded change is acceptable.",
+                        "findings": [],
+                        "verification": ["Reviewed exact diff."],
+                        "requirement_coverage": ["Fixed boundary covered."],
+                        "residual_risk": ["No runtime behavior was exercised."],
+                    },
+                }
+            ),
+            stderr="",
+        )
+        with mock.patch.dict(bridge.os.environ, {}, clear=True):
+            with mock.patch.object(bridge.subprocess, "run", return_value=completed) as run:
+                bridge.invoke_claude(
+                    "bounded", {"type": "object"}, 60, bridge.ELEVATED_MODEL
+                )
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[command.index("--fallback-model") + 1], bridge.DEFAULT_MODEL
+        )
 
     def test_unstructured_review_is_captured_for_fail_closed_adjudication(self):
         completed = subprocess.CompletedProcess(
