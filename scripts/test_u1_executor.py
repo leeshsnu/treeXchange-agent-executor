@@ -497,7 +497,7 @@ class StaticWorkflowTests(unittest.TestCase):
         self.assertIn("GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}", self.workflow)
 
     def test_workflow_serializes_opaque_ticket_consumption(self):
-        self.assertIn("group: u1-claude-global-review", self.workflow)
+        self.assertIn("group: u1-claude-opaque-ticket-global-review", self.workflow)
         self.assertIn("cancel-in-progress: false", self.workflow)
 
     def test_public_dispatch_exposes_only_one_opaque_ticket(self):

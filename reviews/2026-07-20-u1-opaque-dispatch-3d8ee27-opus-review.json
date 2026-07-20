@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "907cec85d6cf10b36f8c988e476b8dd2ab02c428",
+  "head_sha": "3d8ee27873442adced12d33d0512446e85ed7aa0",
+  "diff_sha256": "b53c00aeb8564899b0feb8beb5b56e692ea3e5f2c346a1c66fc6fb877314922f",
+  "task_profile": "standard",
+  "requested_model": "claude-opus-4-8",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "CHANGES_REQUESTED",
+    "summary": "The opaque-ticket refactor sensibly minimizes public dispatch metadata and adds strong reservation-artifact validation, redirect token stripping, and replay defense. However the workflow's global concurrency group (u1-claude-global-review) claimed in README and asserted by tests is not present in the shown workflow diff, so the anti-double-consumption serialization guarantee is unproven. Additionally the concurrency serialization does not prevent a second run consuming the same ticket after the first completes; replay defense rests solely on the run-ledger count==1 check, which has a TOCTOU window against concurrent runs. Publish now uses source_token instead of the review token, changing credential semantics.",
+    "findings": [
+      {
+        "severity": "P1",
+        "status": "open",
+        "finding": "README and test_workflow_serializes_opaque_ticket_consumption assert 'group: u1-claude-global-review' and 'cancel-in-progress: false', but the workflow diff never adds any concurrency block. The claimed serialization that stops two copies consuming one ticket is unproven by the supplied diff; test may pass on unshown workflow content or fail. Missing fail-closed serialization for ticket reuse."
+      },
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "Replay prevention relies on verify_run_budget counting current_runs with matching opaque title ==1. Two concurrent executor runs for the same ticket can both observe count==1 before either registers, a TOCTOU race. Without proven workflow-level concurrency (see above), the run-ledger check does not fail-closed against concurrent double dispatch of one ticket."
+      },
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "publish now posts the comment using source_token (SEASON2_REVIEW_TOKEN path renamed source_token) rather than the prior dedicated review token; the diff removes the separate 'token' variable and uses source_token for both content read and issue comment POST. This broadens the source token's write scope to PR comments, a credential-scope change not justified in the change description."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "resolve_dispatch_ticket resolves pr_number via an open-PR head/base filter expecting exactly one result, but head_sha binding to that PR is only cross-checked through github_resolved.current_head_sha inside the artifact, not re-verified live against the resolved PR's head at publish time here; drift between reservation snapshot and live PR head is caught only later by verify_remote_state."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "README asserts 'protected-runtime availability must be verified before any future Fable workflow is activated' and that U1 always uses Opus 4.8; this is documentation-only policy with no enforcing code in the diff, so the model-routing claim is unsupported by tests."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "_SafeRedirectHandler strips Authorization on redirect and rejects non-https; api_bytes enforces api.github.com origin and a 100KB cap; parse_reservation_archive rejects multi-member, oversized, encrypted, or directory entries. These reduce token-leak and zip-abuse risk and are exercised by tests."
+      }
+    ],
+    "verification": [
+      "Public dispatch now accepts only ticket_id; tests assert pilot_id/pr_number/head_sha/request_id removed from inputs and run-name.",
+      "validate_ticket rejects non-positive and bool ticket IDs (INVALID).",
+      "parse_reservation_archive rejects extra members, non-JSON, oversized, directory, and encrypted entries.",
+      "validate_reservation_context binds pilot, branch, paths, side effects, policy SHA, lease, and per-family/per-pilot budgets to the ticket.",
+      "verify_run_budget denies non-opaque run titles and denies when opaque ticket title count != 1 (replay denial test).",
+      "api_bytes strips Authorization on redirect and enforces https + api.github.com origin with size cap."
+    ],
+    "requirement_coverage": [
+      "Credential exposure: partially covered via redirect token stripping and origin pinning; but source_token scope broadened for publish.",
+      "Budget bypass: per-family and per-pilot ledger checks enforced in reservation context and run budget.",
+      "Fail-closed dispatch: unproven for concurrent ticket consumption due to missing workflow concurrency block in diff.",
+      "Tests proving claims: workflow serialization test asserts content not present in the shown workflow diff.",
+      "Public metadata minimization: covered; only opaque ticket exposed."
+    ],
+    "residual_risk": [
+      "Concurrent double-consumption of one ticket if the claimed workflow concurrency group is absent at deploy time.",
+      "Source token now able to post PR comments, widening blast radius if leaked.",
+      "Reservation snapshot vs live PR head drift relies on downstream verify_remote_state, not re-checked in ticket resolution."
+    ]
+  }
+}

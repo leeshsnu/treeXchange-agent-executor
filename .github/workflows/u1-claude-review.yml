@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: u1-claude-global-review
+  group: u1-claude-opaque-ticket-global-review
   cancel-in-progress: false
 
 jobs:
@@ -67,7 +67,7 @@ jobs:
           python3 scripts/u1_executor.py emit-prompt-env
           --input-dir review_input
           --github-env "$GITHUB_ENV"
-      - name: Run fixed prompt against embedded sanitized evidence
+      - name: Run fixed Opus 4.8 prompt against embedded sanitized evidence
         id: claude
         uses: anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32
         with:

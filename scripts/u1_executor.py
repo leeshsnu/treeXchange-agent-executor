@@ -964,12 +964,12 @@ def main() -> int:
             print("ALLOW")
             return 0
         validate_identity(config)
-        source_token = os.environ.get("SEASON2_REVIEW_TOKEN", "")
+        season2_review_token = os.environ.get("SEASON2_REVIEW_TOKEN", "")
         executor_token = os.environ.get("EXECUTOR_GITHUB_TOKEN", "")
-        if not source_token or not executor_token:
+        if not season2_review_token or not executor_token:
             fail("required review credentials are unavailable")
         pilot, dispatch_args = resolve_dispatch_ticket(
-            config, pilots, args.ticket_id, source_token
+            config, pilots, args.ticket_id, season2_review_token
         )
         verify_run_budget(
             config,
@@ -977,9 +977,11 @@ def main() -> int:
             args.ticket_id,
             os.environ.get("GITHUB_RUN_ID", ""),
         )
-        metadata = verify_remote_state(config, pilot, dispatch_args, source_token)
+        metadata = verify_remote_state(
+            config, pilot, dispatch_args, season2_review_token
+        )
         if args.command == "prepare":
-            prepare_workspace(source_token, metadata, args.output_dir)
+            prepare_workspace(season2_review_token, metadata, args.output_dir)
             print("ALLOW")
             return 0
         expected_metadata = load_object(args.metadata)
@@ -992,7 +994,7 @@ def main() -> int:
             if body.count("\nVerdict:") != 1 or f"\nHead SHA: {metadata.get('head_sha')}\n" not in body:
                 fail("rendered review provenance is malformed", INVALID)
             api_json(
-                source_token,
+                season2_review_token,
                 f"/repos/{EXPECTED_SOURCE}/issues/{metadata['pr_number']}/comments",
                 method="POST",
                 payload={"body": body},
