@@ -21,6 +21,20 @@ bridge = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bridge)
 
 
+def ledger_attempt(index, *, work_item="OPS-03", window="ops-03-window-01", day="2026-07-20"):
+    return {
+        "attempt_id": f"attempt-{index}",
+        "called_at": f"{day}T00:{index % 60:02d}:00+00:00",
+        "repository": "leeshsnu/treeXchange-season2",
+        "base_sha": "a" * 40,
+        "head_sha": "b" * 40,
+        "diff_sha256": f"diff-{index}",
+        "work_item_id": work_item,
+        "review_window": window,
+        "status": "started",
+    }
+
+
 class BridgeTests(unittest.TestCase):
     def test_review_diff_uses_standard_bounded_context(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
@@ -35,6 +49,7 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("call StructuredOutput", prompt)
         self.assertIn('"verdict": "APPROVE or CHANGES_REQUESTED"', prompt)
         self.assertIn("these exact six top-level keys", prompt)
+        self.assertIn("every finding under 700 characters", prompt)
 
     def test_no_tools_or_settings_are_available_to_claude(self):
         structured = {
@@ -145,11 +160,8 @@ class BridgeTests(unittest.TestCase):
 
             def reserve(index):
                 barrier.wait()
-                attempt = {
-                    "attempt_id": f"attempt-{index}",
-                    "diff_sha256": "same-diff",
-                    "status": "started",
-                }
+                attempt = ledger_attempt(index)
+                attempt["diff_sha256"] = "same-diff"
                 try:
                     bridge.reserve_attempt(ledger, attempt)
                     outcome = "reserved"
@@ -166,6 +178,46 @@ class BridgeTests(unittest.TestCase):
 
         self.assertEqual(outcomes.count("reserved"), 1)
         self.assertEqual(outcomes.count("denied"), 7)
+
+    def test_review_window_allows_six_calls_then_pauses_only_that_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            for index in range(6):
+                result = bridge.reserve_attempt(ledger, ledger_attempt(index))
+                self.assertEqual(result["window_calls"], index + 1)
+            with self.assertRaisesRegex(bridge.BridgeError, "review window"):
+                bridge.reserve_attempt(ledger, ledger_attempt(6))
+            unrelated = bridge.reserve_attempt(
+                ledger,
+                ledger_attempt(7, work_item="PLT-D02", window="plt-d02-window-01"),
+            )
+            self.assertEqual(unrelated["window_calls"], 1)
+
+    def test_work_item_can_open_only_two_windows_per_utc_day(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            bridge.reserve_attempt(ledger, ledger_attempt(1, window="ops-03-window-01"))
+            bridge.reserve_attempt(ledger, ledger_attempt(2, window="ops-03-window-02"))
+            with self.assertRaisesRegex(bridge.BridgeError, "daily review-window"):
+                bridge.reserve_attempt(ledger, ledger_attempt(3, window="ops-03-window-03"))
+
+    def test_repository_daily_cap_is_twelve_calls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            for index in range(12):
+                bridge.reserve_attempt(
+                    ledger,
+                    ledger_attempt(
+                        index,
+                        work_item=f"TASK-{index:02d}",
+                        window=f"task-{index:02d}-window-01",
+                    ),
+                )
+            with self.assertRaisesRegex(bridge.BridgeError, "repository daily"):
+                bridge.reserve_attempt(
+                    ledger,
+                    ledger_attempt(20, work_item="TASK-20", window="task-20-window-01"),
+                )
 
     def test_repository_identity_is_allowlisted(self):
         with mock.patch.object(

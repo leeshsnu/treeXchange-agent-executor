@@ -59,6 +59,11 @@ treated as proof of an additional invoice or as proof that a subscription has
 no limit. Unattended scheduling remains disabled until a hard cap and exact
 activation state are independently verified.
 
+The attended bridge cap is an executor safety policy, not an Anthropic account
+limit: at most 6 calls per work-item review window, 2 new windows per work item
+per UTC day, and 12 calls per repository per UTC day. Exhausting one window
+blocks that Gate while unrelated authorized work can continue.
+
 ## Residual administrative risk
 
 The repository owner is also its administrator. Branch and environment
