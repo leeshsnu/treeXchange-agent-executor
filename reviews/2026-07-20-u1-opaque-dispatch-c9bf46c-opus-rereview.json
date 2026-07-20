@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "907cec85d6cf10b36f8c988e476b8dd2ab02c428",
+  "head_sha": "c9bf46ca066571c4e12c72b7d078acec266c55d7",
+  "diff_sha256": "5447960b7936ac37787fe344eb9d3644e775bf58757f39e589f3c6572fe98cb4",
+  "task_profile": "standard",
+  "requested_model": "claude-opus-4-8",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "APPROVE",
+    "summary": "The change replaces public dispatch metadata (pilot, PR, Head SHA, reservation run, request ID) with a single opaque numeric ticket, recovering private details only inside the protected environment from a bounded reservation artifact. Ticket resolution validates run identity, window, artifact identity, lease binding, GitHub snapshot, and budget counters. Replay is prevented by requiring exactly one matching opaque-titled run in the ledger and rejecting non-opaque run metadata. Token is stripped on artifact redirects and downloads are size-bounded. Tests exercise each path and assert on error messages. No open P0/P1/P2 findings.",
+    "findings": [
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "api_bytes bounds body to maximum_bytes (100KB) and parse_reservation_archive caps the member at 50KB, but a maliciously crafted zip could still expand within limits; mitigated by single-member name check and flag_bits encryption rejection, leaving only bounded residual parsing risk."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "validate_ticket rejects bool and non-positive ticket IDs (isinstance bool guard), preventing True from passing as 1; tested by test_active_ticket_requires_positive_integer."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "verify_run_budget now requires exactly one run matching 'ticket N' title and rejects any non-opaque run name, enforcing single-use tickets; proven by test_reused_opaque_ticket_is_denied and test_public_ledger_rejects_non_opaque_run_name."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "_SafeRedirectHandler removes Authorization header and forbids non-HTTPS redirects on artifact download, preventing token leak to redirect targets."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "Config flag renamed public_dispatch_metadata_accepted to opaque_dispatch_verified and defaults false; SECURITY.md item 8 requires inspecting executor SHA and inputs before setting true, preserving fail-closed activation."
+      }
+    ],
+    "verification": [
+      "Public workflow inputs reduced to a single numeric ticket_id; run-name and env expose no pilot/PR/head/request, asserted by StaticWorkflowTests.",
+      "resolve_dispatch_ticket verifies live in_progress reservation run identity, approval window, single live artifact, title/artifact identity, and open-PR resolution before dispatch.",
+      "validate_reservation_context binds lease, policy SHA, GitHub snapshot, and family/pilot budgets to the opaque ticket; over-budget pilot denied in tests.",
+      "verify_run_budget enforces single-use opaque ticket and rejects non-opaque ledger titles.",
+      "Artifact download strips token on redirect and enforces 100KB/50KB size caps.",
+      "publish path unchanged in effect: still binds body marker, Verdict count, and Head SHA before posting via review token."
+    ],
+    "requirement_coverage": [
+      "Credential exposure: token stripped on redirect; artifacts fetched only from api.github.com.",
+      "Budget bypass: per-pilot and total counters enforced from private ledger plus single-use ticket check.",
+      "Fail-closed: opaque_dispatch_verified defaults false; malformed/expired/duplicate reservation denies.",
+      "Unsafe automation: executor cannot merge/push; publish only posts schema-bound comment.",
+      "Metadata disclosure: public dispatch exposes only opaque ticket, tested statically."
+    ],
+    "residual_risk": [
+      "Correctness of the opaque-ticket model depends on the unseen u1-model-reservation workflow producing exactly one non-expired artifact and unique run titles; not provable from this diff.",
+      "README claim that global concurrency prevents two runs consuming one ticket relies on GitHub concurrency semantics not verifiable here, though single-use ledger check adds defense in depth."
+    ]
+  }
+}
