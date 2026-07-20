@@ -27,6 +27,7 @@ ALLOWED_REPOSITORIES = {
     "leeshsnu/treeXchange-season2",
 }
 MAX_DIFF_BYTES = 180_000
+REVIEW_ARTIFACT_PATHSPEC = ":(exclude)reviews/*.json"
 MAX_CALLS_PER_WINDOW = 6
 MAX_WINDOWS_PER_WORK_ITEM_PER_DAY = 2
 MAX_CALLS_PER_REPOSITORY_PER_DAY = 12
@@ -121,6 +122,8 @@ def bounded_diff(repo: Path, base_sha: str, head_sha: str) -> str:
             base_sha,
             head_sha,
             "--",
+            ".",
+            REVIEW_ARTIFACT_PATHSPEC,
         ],
         cwd=repo,
         stdout=subprocess.PIPE,

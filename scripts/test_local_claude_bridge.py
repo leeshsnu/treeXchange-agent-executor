@@ -41,6 +41,17 @@ class BridgeTests(unittest.TestCase):
         self.assertIn('"--unified=3"', source)
         self.assertNotIn('"--unified=40"', source)
 
+    def test_generated_review_artifacts_are_excluded_from_model_input(self):
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"diff --git a/app.py b/app.py\n", stderr=b"",
+        )
+        with mock.patch.object(bridge.subprocess, "run", return_value=completed) as run:
+            result = bridge.bounded_diff(Path("/tmp/repo"), "a" * 40, "b" * 40)
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--") + 1], ".")
+        self.assertIn(bridge.REVIEW_ARTIFACT_PATHSPEC, command)
+        self.assertEqual(result, "diff --git a/app.py b/app.py\n")
+
     def test_prompt_marks_diff_as_untrusted(self):
         prompt = bridge.build_prompt("leeshsnu/treeXchange-agent-executor", "a" * 40, "b" * 40, "diff")
         self.assertIn("BEGIN_UNTRUSTED_DIFF_", prompt)
