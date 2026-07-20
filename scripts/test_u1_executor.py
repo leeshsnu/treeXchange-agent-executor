@@ -381,7 +381,7 @@ class SourceBoundaryTests(unittest.TestCase):
             return_value={"total_count": 2, "workflow_runs": []},
         ):
             with self.assertRaises(u1.GateError):
-                u1.verify_run_budget(config, "redacted", "100")
+                u1.verify_run_budget(config, "redacted", 42, "100")
 
     def test_public_ledger_rejects_non_opaque_run_name(self):
         config = active_config()
@@ -399,8 +399,8 @@ class SourceBoundaryTests(unittest.TestCase):
             "api_json",
             return_value={"total_count": len(runs), "workflow_runs": runs},
         ):
-            with self.assertRaises(u1.GateError):
-                u1.verify_run_budget(config, "redacted", "1")
+            with self.assertRaisesRegex(u1.GateError, "non-opaque run metadata"):
+                u1.verify_run_budget(config, "redacted", 42, "1")
 
     def test_budget_denies_when_current_run_is_not_visible(self):
         config = active_config()
@@ -409,7 +409,7 @@ class SourceBoundaryTests(unittest.TestCase):
                 "id": 99,
                 "created_at": "2026-07-18T09:00:00Z",
                 "event": "workflow_dispatch",
-                "display_title": "U1 Claude review",
+                "display_title": "U1 Claude review | ticket 42",
             }
         ]
         with mock.patch.object(
@@ -418,7 +418,7 @@ class SourceBoundaryTests(unittest.TestCase):
             return_value={"total_count": len(runs), "workflow_runs": runs},
         ):
             with self.assertRaisesRegex(u1.GateError, "not yet visible"):
-                u1.verify_run_budget(config, "redacted", "100")
+                u1.verify_run_budget(config, "redacted", 42, "100")
 
     def test_budget_allows_visible_current_run_within_limits(self):
         config = active_config()
@@ -427,7 +427,7 @@ class SourceBoundaryTests(unittest.TestCase):
                 "id": 100,
                 "created_at": "2026-07-18T09:00:00Z",
                 "event": "workflow_dispatch",
-                "display_title": "U1 Claude review",
+                "display_title": "U1 Claude review | ticket 42",
             }
         ]
         with mock.patch.object(
@@ -435,7 +435,26 @@ class SourceBoundaryTests(unittest.TestCase):
             "api_json",
             return_value={"total_count": len(runs), "workflow_runs": runs},
         ):
-            u1.verify_run_budget(config, "redacted", "100")
+            u1.verify_run_budget(config, "redacted", 42, "100")
+
+    def test_reused_opaque_ticket_is_denied(self):
+        config = active_config()
+        runs = [
+            {
+                "id": run_id,
+                "created_at": "2026-07-18T09:00:00Z",
+                "event": "workflow_dispatch",
+                "display_title": "U1 Claude review | ticket 42",
+            }
+            for run_id in (100, 101)
+        ]
+        with mock.patch.object(
+            u1,
+            "api_json",
+            return_value={"total_count": len(runs), "workflow_runs": runs},
+        ):
+            with self.assertRaisesRegex(u1.GateError, "already been used"):
+                u1.verify_run_budget(config, "redacted", 42, "101")
 
 
 class StaticWorkflowTests(unittest.TestCase):
@@ -481,7 +500,9 @@ class StaticWorkflowTests(unittest.TestCase):
         run_name = next(
             line for line in self.workflow.splitlines() if line.startswith("run-name:")
         )
-        self.assertEqual(run_name, "run-name: U1 Claude review")
+        self.assertEqual(
+            run_name, "run-name: U1 Claude review | ticket ${{ inputs.ticket_id }}"
+        )
         self.assertIn("      ticket_id:\n", self.workflow)
         for private_name in ("pilot_id", "pr_number", "head_sha", "request_id"):
             self.assertNotIn(f"inputs.{private_name}", self.workflow)
