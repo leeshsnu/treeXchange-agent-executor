@@ -96,6 +96,37 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(response["format"], "unstructured")
         self.assertEqual(response["raw_review"], "Useful prose review.")
 
+    def test_exact_schema_json_text_is_machine_validated(self):
+        review = {
+            "verdict": "APPROVE",
+            "summary": "No blocking finding.",
+            "findings": [],
+            "verification": ["Exact diff reviewed."],
+            "requirement_coverage": ["Fail-closed path covered."],
+            "residual_risk": ["No live producer yet."],
+        }
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=json.dumps({"is_error": False, "result": json.dumps(review)}),
+            stderr="",
+        )
+        with mock.patch.dict(bridge.os.environ, {}, clear=True):
+            with mock.patch.object(bridge.subprocess, "run", return_value=completed):
+                response = bridge.invoke_claude("bounded", {"type": "object"}, 60)
+        self.assertEqual(response["format"], "validated_json_text")
+        self.assertEqual(response["result"]["verdict"], "APPROVE")
+
+    def test_duplicate_json_keys_remain_fail_closed(self):
+        raw = '{"verdict":"APPROVE","verdict":"CHANGES_REQUESTED"}'
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=json.dumps({"is_error": False, "result": raw}), stderr="",
+        )
+        with mock.patch.dict(bridge.os.environ, {}, clear=True):
+            with mock.patch.object(bridge.subprocess, "run", return_value=completed):
+                response = bridge.invoke_claude("bounded", {"type": "object"}, 60)
+        self.assertEqual(response["format"], "unstructured")
+
     def test_duplicate_diff_is_denied_before_model_call(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Path(directory) / "ledger.json"

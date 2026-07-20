@@ -360,6 +360,25 @@ def invoke_claude(
         fail("Claude text review exceeds the safe fallback limit")
     if any(pattern.search(raw_review) for pattern in u1_executor.SECRET_PATTERNS):
         fail("Claude text review resembles a credential")
+    try:
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate JSON key")
+                value[key] = item
+            return value
+
+        text_result = json.loads(raw_review, object_pairs_hook=unique_object)
+        if isinstance(text_result, dict):
+            u1_executor.validate_result(text_result)
+            return {
+                "wrapper": wrapper,
+                "format": "validated_json_text",
+                "result": text_result,
+            }
+    except (json.JSONDecodeError, ValueError, u1_executor.GateError):
+        pass
     return {
         "wrapper": wrapper,
         "format": "unstructured",
@@ -422,7 +441,7 @@ def review(args: argparse.Namespace) -> None:
         "minimum_model": MINIMUM_MODEL,
         "format": response["format"],
     }
-    if response["format"] == "structured":
+    if response["format"] in {"structured", "validated_json_text"}:
         result = response["result"]
         verdict = result["verdict"]
         output["review"] = result
