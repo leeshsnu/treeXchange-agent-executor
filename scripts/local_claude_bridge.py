@@ -263,6 +263,17 @@ Review goal:
 - use APPROVE only if there is no open P0, P1, or P2 finding;
 - do not invent repository state outside the supplied diff.
 
+Required final object shape (these exact six top-level keys, no others):
+{{
+  "verdict": "APPROVE or CHANGES_REQUESTED",
+  "summary": "concise review conclusion",
+  "findings": [{{"severity": "P0|P1|P2|P3|none", "status": "open|closed", "finding": "specific evidence and impact"}}],
+  "verification": ["what the supplied diff proves"],
+  "requirement_coverage": ["which requested safeguards are covered"],
+  "residual_risk": ["remaining bounded risk, or none"]
+}}
+Do not use decision, id, title, confidence, category, location, evidence, impact, or recommendation fields.
+
 Repository: {identity}
 Base SHA: {base_sha}
 Head SHA: {head_sha}
