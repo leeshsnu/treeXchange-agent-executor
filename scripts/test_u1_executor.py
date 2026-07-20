@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import io
 import json
 import os
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -37,13 +39,85 @@ def active_config():
         "trusted_executor_sha_variable_verified": True,
         "hard_cap_verified": True,
         "actions_step_debug_disabled_verified": True,
-        "public_dispatch_metadata_accepted": True,
+        "opaque_dispatch_verified": True,
         "claude_credential_installed_by_user": True,
         "season2_review_token_installed_by_user": True,
     }
     for index, pilot in enumerate(config["pilots"], start=10):
         pilot["issue_number"] = index
     return config
+
+
+def reservation_context(
+    *, ticket_id=42, pilot_id="U1-P1", head_sha=None, claude_used=1, pilot_used=1
+):
+    head_sha = head_sha or "b" * 40
+    branch = u1.EXPECTED_PILOTS[pilot_id]["branch"]
+    issue_number = 10 if pilot_id == "U1-P1" else 11
+    return {
+        "now": "2026-07-18T08:30:00Z",
+        "action": "reserve_model",
+        "repository": u1.EXPECTED_SOURCE,
+        "workflow": "u1-model-reservation.yml",
+        "run_id": f"github-actions-{ticket_id}-1",
+        "policy_source": {
+            "ref": "refs/heads/main",
+            "sha": "a" * 40,
+            "verified": True,
+            "external_binding": "U1_TRUSTED_POLICY_SHA",
+        },
+        "pilot_id": pilot_id,
+        "issue_number": issue_number,
+        "branch": branch,
+        "role": "reviewer",
+        "family": "Claude",
+        "head_sha": head_sha,
+        "requested_paths": [u1.EXPECTED_PILOTS[pilot_id]["allowed_path"]],
+        "requested_side_effects": [
+            "read_repository",
+            "write_pr_review_comment",
+            "write_check_result",
+        ],
+        "github_resolved": {
+            "issue_number": issue_number,
+            "issue_state": "open",
+            "branch": branch,
+            "head_ref": branch,
+            "base_ref": "main",
+            "base_sha": "a" * 40,
+            "draft": False,
+            "pr_state": "open",
+            "current_head_sha": head_sha,
+        },
+        "lease": {
+            "source": "github_actions_concurrency_and_run_ledger",
+            "exclusive": True,
+            "reservation_includes_current": True,
+            "reservation_run_database_id": ticket_id,
+            "live_reservation_run_verified": True,
+            "request_id": "request-1234",
+            "pilot_id": pilot_id,
+            "run_id": f"github-actions-{ticket_id}-1",
+            "head_sha": head_sha,
+            "expires_at": "2026-07-18T09:30:00Z",
+        },
+        "usage_ledger": {
+            "source": "github_actions_workflow_runs",
+            "verified": True,
+            "reservation_includes_current": True,
+            "used_by_family_including_current": {"Codex": 0, "Claude": claude_used},
+            "used_by_family_and_pilot_including_current": {
+                f"Claude:{pilot_id}": pilot_used
+            },
+        },
+    }
+
+
+def reservation_archive(context):
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("u1-reservation.json", json.dumps(context))
+    return output.getvalue()
 
 
 class ConfigTests(unittest.TestCase):
@@ -55,19 +129,18 @@ class ConfigTests(unittest.TestCase):
         pilots = u1.validate_config(active_config())
         self.assertEqual(pilots["U1-P1"]["issue_number"], 10)
 
-    def test_paused_dispatch_denies_before_identity_or_credentials(self):
+    def test_paused_ticket_denies_before_identity_or_credentials(self):
         config = paused_config()
-        pilots = u1.validate_config(config)
-        args = mock.Mock(
-            pilot_id="U1-P1",
-            pr_number=3,
-            head_sha="b" * 40,
-            reservation_run_id=42,
-            request_id="request-1234",
-        )
+        u1.validate_config(config)
         with self.assertRaises(u1.GateError) as context:
-            u1.validate_dispatch_values(config, pilots, args)
+            u1.validate_ticket(config, 42)
         self.assertEqual(context.exception.code, u1.DENY)
+
+    def test_active_ticket_requires_positive_integer(self):
+        with mock.patch.object(u1, "now_utc", return_value=u1.parse_time("2026-07-18T09:00:00Z", "now")):
+            with self.assertRaises(u1.GateError) as context:
+                u1.validate_ticket(active_config(), 0)
+        self.assertEqual(context.exception.code, u1.INVALID)
 
     def test_activation_window_over_seven_days_is_invalid(self):
         config = active_config()
@@ -175,6 +248,72 @@ class ResultTests(unittest.TestCase):
 
 
 class SourceBoundaryTests(unittest.TestCase):
+    def test_reservation_archive_accepts_one_bounded_json_member(self):
+        context = reservation_context()
+        self.assertEqual(u1.parse_reservation_archive(reservation_archive(context)), context)
+
+    def test_reservation_archive_rejects_additional_members(self):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("u1-reservation.json", "{}")
+            archive.writestr("extra.txt", "not allowed")
+        with self.assertRaises(u1.GateError):
+            u1.parse_reservation_archive(output.getvalue())
+
+    def test_private_reservation_ledger_enforces_per_pilot_budget(self):
+        config = active_config()
+        pilots = u1.validate_config(config)
+        context = reservation_context(claude_used=3, pilot_used=3)
+        with mock.patch.dict(os.environ, {"U1_NOW": "2026-07-18T09:00:00Z"}, clear=False):
+            with self.assertRaisesRegex(u1.GateError, "pilot Claude review budget"):
+                u1.validate_reservation_context(config, pilots, 42, context)
+
+    def test_opaque_ticket_resolves_private_context_and_pull_request(self):
+        config = active_config()
+        pilots = u1.validate_config(config)
+        context = reservation_context()
+        run = {
+            "status": "in_progress",
+            "conclusion": None,
+            "event": "workflow_dispatch",
+            "name": "U1 model reservation",
+            "path": ".github/workflows/u1-model-reservation.yml",
+            "run_attempt": 1,
+            "actor": {"login": "leeshsnu"},
+            "head_branch": "main",
+            "head_sha": "a" * 40,
+            "created_at": "2026-07-18T08:30:00Z",
+            "display_title": "U1 reserve | Claude | U1-P1 | request-1234",
+        }
+
+        def fake_api(_token, path, **_kwargs):
+            if path.endswith("/actions/runs/42"):
+                return run
+            if path.endswith("/actions/runs/42/artifacts?per_page=100"):
+                return {
+                    "total_count": 1,
+                    "artifacts": [
+                        {
+                            "id": 88,
+                            "name": "u1-reservation--Claude--U1-P1--request-1234",
+                            "expired": False,
+                        }
+                    ],
+                }
+            if "/pulls?state=open&" in path:
+                return [{"number": 33}]
+            raise AssertionError(path)
+
+        with (
+            mock.patch.dict(os.environ, {"U1_NOW": "2026-07-18T09:00:00Z"}, clear=False),
+            mock.patch.object(u1, "api_json", side_effect=fake_api),
+            mock.patch.object(u1, "api_bytes", return_value=reservation_archive(context)),
+        ):
+            pilot, args = u1.resolve_dispatch_ticket(config, pilots, 42, "redacted")
+        self.assertEqual(pilot["branch"], u1.EXPECTED_PILOTS["U1-P1"]["branch"])
+        self.assertEqual(args.pr_number, 33)
+        self.assertEqual(args.head_sha, "b" * 40)
+
     def test_embedded_prompt_contains_only_delimited_sanitized_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -242,9 +381,9 @@ class SourceBoundaryTests(unittest.TestCase):
             return_value={"total_count": 2, "workflow_runs": []},
         ):
             with self.assertRaises(u1.GateError):
-                u1.verify_run_budget(config, "redacted", "U1-P1", "100")
+                u1.verify_run_budget(config, "redacted", "100")
 
-    def test_per_pilot_budget_uses_minimized_public_run_name(self):
+    def test_public_ledger_rejects_non_opaque_run_name(self):
         config = active_config()
         runs = [
             {
@@ -253,7 +392,7 @@ class SourceBoundaryTests(unittest.TestCase):
                 "event": "workflow_dispatch",
                 "display_title": "U1 Claude review | U1-P1",
             }
-            for index in range(3)
+            for index in range(1)
         ]
         with mock.patch.object(
             u1,
@@ -261,7 +400,7 @@ class SourceBoundaryTests(unittest.TestCase):
             return_value={"total_count": len(runs), "workflow_runs": runs},
         ):
             with self.assertRaises(u1.GateError):
-                u1.verify_run_budget(config, "redacted", "U1-P1", "1")
+                u1.verify_run_budget(config, "redacted", "1")
 
     def test_budget_denies_when_current_run_is_not_visible(self):
         config = active_config()
@@ -270,7 +409,7 @@ class SourceBoundaryTests(unittest.TestCase):
                 "id": 99,
                 "created_at": "2026-07-18T09:00:00Z",
                 "event": "workflow_dispatch",
-                "display_title": "U1 Claude review | U1-P1",
+                "display_title": "U1 Claude review",
             }
         ]
         with mock.patch.object(
@@ -279,7 +418,7 @@ class SourceBoundaryTests(unittest.TestCase):
             return_value={"total_count": len(runs), "workflow_runs": runs},
         ):
             with self.assertRaisesRegex(u1.GateError, "not yet visible"):
-                u1.verify_run_budget(config, "redacted", "U1-P1", "100")
+                u1.verify_run_budget(config, "redacted", "100")
 
     def test_budget_allows_visible_current_run_within_limits(self):
         config = active_config()
@@ -288,7 +427,7 @@ class SourceBoundaryTests(unittest.TestCase):
                 "id": 100,
                 "created_at": "2026-07-18T09:00:00Z",
                 "event": "workflow_dispatch",
-                "display_title": "U1 Claude review | U1-P1",
+                "display_title": "U1 Claude review",
             }
         ]
         with mock.patch.object(
@@ -296,7 +435,7 @@ class SourceBoundaryTests(unittest.TestCase):
             "api_json",
             return_value={"total_count": len(runs), "workflow_runs": runs},
         ):
-            u1.verify_run_budget(config, "redacted", "U1-P1", "100")
+            u1.verify_run_budget(config, "redacted", "100")
 
 
 class StaticWorkflowTests(unittest.TestCase):
@@ -338,19 +477,21 @@ class StaticWorkflowTests(unittest.TestCase):
         self.assertEqual(self.workflow.count(guard), 2)
         self.assertIn("GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}", self.workflow)
 
-    def test_public_run_name_does_not_expose_private_head_or_request(self):
+    def test_public_dispatch_exposes_only_one_opaque_ticket(self):
         run_name = next(
             line for line in self.workflow.splitlines() if line.startswith("run-name:")
         )
-        self.assertNotIn("head_sha", run_name)
-        self.assertNotIn("request_id", run_name)
+        self.assertEqual(run_name, "run-name: U1 Claude review")
+        self.assertIn("      ticket_id:\n", self.workflow)
+        for private_name in ("pilot_id", "pr_number", "head_sha", "request_id"):
+            self.assertNotIn(f"inputs.{private_name}", self.workflow)
+            self.assertNotIn(f"      {private_name}:\n", self.workflow)
 
     def test_publish_command_performs_final_live_recheck(self):
         publish = self.workflow.split("      - name: Publish only the validated exact-Head review", 1)[1]
         self.assertIn("EXECUTOR_GITHUB_TOKEN", publish)
         self.assertIn("U1_EXECUTOR_TRUSTED_SHA", publish)
-        self.assertIn('--head-sha "$HEAD_SHA"', publish)
-        self.assertIn('--reservation-run-id "$RESERVATION_RUN_ID"', publish)
+        self.assertIn('--ticket-id "$TICKET_ID"', publish)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "1bcc9ca58e386684c16e81f16c3fbb411dbd04ad",
+  "head_sha": "907cec85d6cf10b36f8c988e476b8dd2ab02c428",
+  "diff_sha256": "520b043a598a6fd6f504b58d6f8506610603fd1adc937dfe1691ad52162c76c8",
+  "task_profile": "standard",
+  "requested_model": "claude-opus-4-8",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "CHANGES_REQUESTED",
+    "summary": "The executor is well-designed with strong fail-closed controls, but the commit under review adds a task-profile routing path (advanced/insight/design -> Fable 5) whose model IDs (claude-fable-5) are unverified and never proven reachable, and the routing tests only exercise resolve_model in isolation. A budget-bypass gap exists: reserve_attempt only enforces the repository daily cap against same-day calls, but window and duplicate-diff checks scan the entire ledger with no bound, and the elevated model path lacks a test proving --fallback-model is actually invoked end-to-end through review(). SECURITY.md itself flags public_dispatch_metadata_accepted as an open disclosure of private Season 2 Head SHA and request IDs via Actions event metadata.",
+    "findings": [
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "scripts/local_claude_bridge.py routes advanced/insight/design profiles to ELEVATED_MODEL='claude-fable-5', an unverified model ID with no proof it exists or is entitled on the subscription. invoke_claude only appends --fallback-model for ELEVATED_MODEL, but no test exercises the full review() path with the elevated model; the failure mode if Fable 5 is unavailable and fallback also fails is untested. README claims Fable 5 is 'the most advanced' with Opus 4.8 fallback, an unsupported capability claim."
+      },
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "SECURITY.md item 8 documents that public dispatch exposes PR number, Head SHA, reservation, and request identifiers as Actions event metadata; public_dispatch_metadata_accepted defaults false and the config requires it true to activate. This is a live private-state disclosure (Season 2 Head SHA and request IDs leak to a public repo's Actions log) that the diff acknowledges but does not close; an opaque broker is only 'preferred', not implemented."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "reserve_attempt duplicate-diff check scans the entire ledger (all history, unbounded) while window and daily caps only filter by day/window. A ledger that grows without pruning makes every reservation O(n) and the duplicate check permanently blocks re-review of a legitimately re-opened identical diff. No ledger rotation or retention is defined."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "test_task_profiles_route_models_deterministically and test_elevated_model_can_fall_back_only_to_default assert command construction but never invoke the real 'claude' binary, so the tests prove argument wiring, not that claude-fable-5 or its fallback actually resolve. The commit message 'prove model and budget routing paths' overstates what the mock-only tests demonstrate."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "No-tools isolation, secret-pattern rejection, OS file-lock serialization, duplicate-diff denial, output/ledger repository-boundary confinement, disallowed-auth-env rejection, and fail-closed unstructured-output handling are correctly implemented and covered by tests."
+      }
+    ],
+    "verification": [
+      "Diff proves --tools \"\", --strict-mcp-config, --setting-sources \"\" and DISALLOWED_AUTH_ENV rejection deny file/shell/MCP and API-key overrides.",
+      "Concurrent reservation test proves the OS flock permits exactly one of eight racing identical-diff reservations.",
+      "Cap tests prove 6/window, 2 windows/work-item/day, 12/repo/day limits reject the boundary-crossing attempt.",
+      "Duplicate-key and prose fallback tests prove unstructured output forces CHANGES_REQUESTED and never authorizes approval.",
+      "validate_result rejects APPROVE with open P0/P1/P2 and strips hidden-markup/field-injection from model text.",
+      "Workflow static tests confirm dispatch-only, immutable action SHAs, read-only token, rerun denial, and minimized run-name."
+    ],
+    "requirement_coverage": [
+      "Credential exposure: covered by secret-pattern scan on diff and model text plus DISALLOWED_AUTH_ENV.",
+      "Budget bypass: covered by ledger caps and flock, but unbounded duplicate-diff scan is a residual gap.",
+      "Fail-closed: covered by unstructured/duplicate-key/schema-drift forcing CHANGES_REQUESTED.",
+      "Unsafe automation: covered by no-tools, no merge/push/deploy, dispatch-only workflow.",
+      "Unsupported claims: partially covered; Fable 5 capability claim in README is unverified.",
+      "Tests proving claim: routing tests are mock-only and do not prove real model reachability."
+    ],
+    "residual_risk": [
+      "claude-fable-5 model ID may not exist or be entitled; runtime failure is untested beyond mocks.",
+      "Public Actions metadata leaks Season 2 Head SHA and request IDs until an opaque broker replaces it.",
+      "Unbounded ledger growth degrades reservation performance and permanently blocks identical re-reviews.",
+      "Administrator can revert branch/environment protection; mitigated only by required user-approved SHA."
+    ]
+  }
+}

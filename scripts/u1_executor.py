@@ -7,6 +7,7 @@ import argparse
 import base64
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -190,7 +192,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "trusted_executor_sha_variable_verified": False,
             "hard_cap_verified": False,
             "actions_step_debug_disabled_verified": False,
-            "public_dispatch_metadata_accepted": False,
+            "opaque_dispatch_verified": False,
             "claude_credential_installed_by_user": False,
             "season2_review_token_installed_by_user": False,
         }
@@ -204,7 +206,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "trusted_executor_sha_variable_verified",
             "hard_cap_verified",
             "actions_step_debug_disabled_verified",
-            "public_dispatch_metadata_accepted",
+            "opaque_dispatch_verified",
             "claude_credential_installed_by_user",
             "season2_review_token_installed_by_user",
         )
@@ -251,21 +253,10 @@ def validate_identity(config: dict[str, Any]) -> None:
         fail("workflow reruns are forbidden; create a new reservation and dispatch")
 
 
-def validate_dispatch_values(
-    config: dict[str, Any], pilots: dict[str, dict[str, Any]], args: argparse.Namespace
-) -> dict[str, Any]:
+def validate_ticket(config: dict[str, Any], ticket_id: int) -> None:
     require_active(config)
-    if not PILOT_RE.fullmatch(args.pilot_id) or args.pilot_id not in pilots:
-        fail("dispatch pilot is not fixed in the packet")
-    if not isinstance(args.pr_number, int) or args.pr_number < 1:
-        fail("PR number is invalid", INVALID)
-    if not SHA_RE.fullmatch(args.head_sha):
-        fail("Head must be a full lowercase SHA", INVALID)
-    if not isinstance(args.reservation_run_id, int) or args.reservation_run_id < 1:
-        fail("reservation run ID is invalid", INVALID)
-    if not OPAQUE_RE.fullmatch(args.request_id):
-        fail("request ID is invalid", INVALID)
-    return pilots[args.pilot_id]
+    if not isinstance(ticket_id, int) or isinstance(ticket_id, bool) or ticket_id < 1:
+        fail("opaque ticket ID is invalid", INVALID)
 
 
 def api_json(
@@ -293,6 +284,233 @@ def api_json(
         return json.loads(body) if body else {}
     except json.JSONDecodeError:
         fail("GitHub returned malformed JSON")
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow HTTPS artifact redirects without forwarding the GitHub token."""
+
+    def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+        redirected = super().redirect_request(
+            request, file_pointer, code, message, headers, new_url
+        )
+        if redirected is None:
+            return None
+        if urllib.parse.urlparse(new_url).scheme != "https":
+            fail("artifact download attempted an insecure redirect")
+        redirected.remove_header("Authorization")
+        return redirected
+
+
+def api_bytes(token: str, path: str, *, maximum_bytes: int = 100_000) -> bytes:
+    url = path if path.startswith("https://") else f"https://api.github.com{path}"
+    if urllib.parse.urlparse(url).hostname != "api.github.com":
+        fail("artifact download must begin at GitHub API")
+    request = urllib.request.Request(url, method="GET")
+    request.add_header("Accept", "application/vnd.github+json")
+    request.add_header("Authorization", f"Bearer {token}")
+    request.add_header("X-GitHub-Api-Version", "2022-11-28")
+    request.add_header("User-Agent", "treeXchange-u1-executor")
+    opener = urllib.request.build_opener(_SafeRedirectHandler())
+    try:
+        with opener.open(request, timeout=20) as response:
+            body = response.read(maximum_bytes + 1)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        fail("reservation evidence could not be downloaded")
+    if len(body) > maximum_bytes:
+        fail("reservation evidence exceeds the size boundary")
+    return body
+
+
+def parse_reservation_archive(raw: bytes) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            members = archive.infolist()
+            if len(members) != 1 or members[0].filename != "u1-reservation.json":
+                fail("reservation archive must contain exactly one trusted evidence file")
+            member = members[0]
+            if member.is_dir() or member.file_size > 50_000 or member.flag_bits & 0x1:
+                fail("reservation evidence member is unsafe or oversized")
+            payload = archive.read(member)
+    except (zipfile.BadZipFile, RuntimeError, OSError):
+        fail("reservation evidence archive is malformed")
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("reservation evidence is not valid UTF-8 JSON")
+    if not isinstance(value, dict):
+        fail("reservation evidence must be a JSON object")
+    return value
+
+
+def _bounded_positive_int(value: Any, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        fail(f"reservation {field} is invalid")
+    return value
+
+
+def validate_reservation_context(
+    config: dict[str, Any],
+    pilots: dict[str, dict[str, Any]],
+    ticket_id: int,
+    context: dict[str, Any],
+) -> tuple[dict[str, Any], str, str]:
+    pilot_id = context.get("pilot_id")
+    if not isinstance(pilot_id, str) or not PILOT_RE.fullmatch(pilot_id):
+        fail("reservation pilot is invalid")
+    pilot = pilots.get(pilot_id)
+    if pilot is None:
+        fail("reservation pilot is outside the approved packet")
+    head_sha = context.get("head_sha")
+    if not isinstance(head_sha, str) or not SHA_RE.fullmatch(head_sha):
+        fail("reservation Head is invalid")
+    if (
+        context.get("action") != "reserve_model"
+        or context.get("repository") != EXPECTED_SOURCE
+        or context.get("workflow") != "u1-model-reservation.yml"
+        or context.get("family") != "Claude"
+        or context.get("role") != "reviewer"
+        or context.get("branch") != pilot["branch"]
+        or context.get("issue_number") != pilot.get("issue_number")
+        or context.get("requested_paths") != [pilot["allowed_path"]]
+        or context.get("requested_side_effects")
+        != ["read_repository", "write_pr_review_comment", "write_check_result"]
+    ):
+        fail("reservation evidence does not match the fixed reviewer packet")
+
+    trusted_source_sha = config["activation"]["trusted_source_policy_sha"]
+    policy = context.get("policy_source")
+    if not isinstance(policy, dict) or policy != {
+        "ref": "refs/heads/main",
+        "sha": trusted_source_sha,
+        "verified": True,
+        "external_binding": "U1_TRUSTED_POLICY_SHA",
+    }:
+        fail("reservation policy binding is invalid")
+
+    resolved = context.get("github_resolved")
+    if not isinstance(resolved, dict) or (
+        resolved.get("issue_number") != pilot.get("issue_number")
+        or resolved.get("issue_state") != "open"
+        or resolved.get("branch") != pilot["branch"]
+        or resolved.get("head_ref") != pilot["branch"]
+        or resolved.get("base_ref") != "main"
+        or resolved.get("base_sha") != trusted_source_sha
+        or resolved.get("draft") is not False
+        or resolved.get("pr_state") != "open"
+        or resolved.get("current_head_sha") != head_sha
+    ):
+        fail("reservation GitHub snapshot is invalid")
+
+    lease = context.get("lease")
+    if not isinstance(lease, dict):
+        fail("reservation lease is missing")
+    request_id = lease.get("request_id")
+    if not isinstance(request_id, str) or not OPAQUE_RE.fullmatch(request_id):
+        fail("reservation request ID is invalid")
+    if (
+        lease.get("source") != "github_actions_concurrency_and_run_ledger"
+        or lease.get("exclusive") is not True
+        or lease.get("reservation_includes_current") is not True
+        or lease.get("reservation_run_database_id") != ticket_id
+        or lease.get("live_reservation_run_verified") is not True
+        or lease.get("pilot_id") != pilot_id
+        or lease.get("head_sha") != head_sha
+        or lease.get("run_id") != f"github-actions-{ticket_id}-1"
+    ):
+        fail("reservation lease is not bound to the opaque ticket")
+    if now_utc() >= parse_time(lease.get("expires_at"), "reservation expires_at"):
+        fail("reservation lease has expired")
+
+    ledger = context.get("usage_ledger")
+    if not isinstance(ledger, dict) or (
+        ledger.get("source") != "github_actions_workflow_runs"
+        or ledger.get("verified") is not True
+        or ledger.get("reservation_includes_current") is not True
+    ):
+        fail("reservation usage ledger is invalid")
+    by_family = ledger.get("used_by_family_including_current")
+    by_family_pilot = ledger.get("used_by_family_and_pilot_including_current")
+    if not isinstance(by_family, dict) or not isinstance(by_family_pilot, dict):
+        fail("reservation usage counters are unavailable")
+    claude_used = _bounded_positive_int(by_family.get("Claude"), "Claude usage")
+    pilot_used = _bounded_positive_int(
+        by_family_pilot.get(f"Claude:{pilot_id}"), "pilot Claude usage"
+    )
+    if claude_used > config["limits"]["maximum_claude_reviews_total"]:
+        fail("total Claude review budget is exhausted")
+    if pilot_used > config["limits"]["maximum_claude_reviews_per_pilot"]:
+        fail("pilot Claude review budget is exhausted")
+    return pilot, head_sha, request_id
+
+
+def resolve_dispatch_ticket(
+    config: dict[str, Any],
+    pilots: dict[str, dict[str, Any]],
+    ticket_id: int,
+    token: str,
+) -> tuple[dict[str, Any], argparse.Namespace]:
+    validate_ticket(config, ticket_id)
+    run = api_json(token, f"/repos/{EXPECTED_SOURCE}/actions/runs/{ticket_id}")
+    trusted_source_sha = config["activation"]["trusted_source_policy_sha"]
+    if (
+        not isinstance(run, dict)
+        or run.get("status") != "in_progress"
+        or run.get("conclusion") is not None
+        or run.get("event") != "workflow_dispatch"
+        or run.get("name") != "U1 model reservation"
+        or run.get("path") != ".github/workflows/u1-model-reservation.yml"
+        or run.get("run_attempt") != 1
+        or (run.get("actor") or {}).get("login") != "leeshsnu"
+        or run.get("head_branch") != "main"
+        or run.get("head_sha") != trusted_source_sha
+    ):
+        fail("opaque ticket does not identify a live trusted reservation")
+    created = parse_time(run.get("created_at"), "reservation created_at")
+    approved = parse_time(config["activation"]["approved_at"], "approved_at")
+    expires = parse_time(config["activation"]["expires_at"], "expires_at")
+    if created < approved or created >= expires:
+        fail("reservation is outside the approved window")
+
+    artifacts = api_json(
+        token, f"/repos/{EXPECTED_SOURCE}/actions/runs/{ticket_id}/artifacts?per_page=100"
+    )
+    items = artifacts.get("artifacts") if isinstance(artifacts, dict) else None
+    if not isinstance(items, list) or artifacts.get("total_count") != len(items):
+        fail("reservation artifact ledger is incomplete")
+    matches = [item for item in items if item.get("expired") is False]
+    if len(matches) != 1:
+        fail("opaque ticket must resolve to exactly one live reservation artifact")
+    artifact_id = _bounded_positive_int(matches[0].get("id"), "artifact ID")
+    context = parse_reservation_archive(
+        api_bytes(token, f"/repos/{EXPECTED_SOURCE}/actions/artifacts/{artifact_id}/zip")
+    )
+    pilot, head_sha, request_id = validate_reservation_context(
+        config, pilots, ticket_id, context
+    )
+    pilot_id = context["pilot_id"]
+    expected_title = f"U1 reserve | Claude | {pilot_id} | {request_id}"
+    expected_artifact = f"u1-reservation--Claude--{pilot_id}--{request_id}"
+    if run.get("display_title") != expected_title or matches[0].get("name") != expected_artifact:
+        fail("reservation title or artifact identity does not match its private evidence")
+
+    owner = EXPECTED_SOURCE.split("/", 1)[0]
+    head_filter = urllib.parse.quote(f"{owner}:{pilot['branch']}", safe="")
+    pulls = api_json(
+        token,
+        f"/repos/{EXPECTED_SOURCE}/pulls?state=open&head={head_filter}&base=main&per_page=10",
+    )
+    if not isinstance(pulls, list) or len(pulls) != 1:
+        fail("reservation pilot must resolve to exactly one open pull request")
+    pr_number = _bounded_positive_int(pulls[0].get("number"), "pull request number")
+    args = argparse.Namespace(
+        ticket_id=ticket_id,
+        pilot_id=pilot_id,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        reservation_run_id=ticket_id,
+        request_id=request_id,
+    )
+    return pilot, args
 
 
 def required_text(value: Any, field: str) -> str:
@@ -343,7 +561,7 @@ def decode_content(token: str, path: str, ref: str) -> str:
 
 
 def verify_run_budget(
-    config: dict[str, Any], executor_token: str, pilot_id: str, current_run_id: str
+    config: dict[str, Any], executor_token: str, current_run_id: str
 ) -> None:
     if not re.fullmatch(r"[1-9][0-9]*", current_run_id):
         fail("current workflow run identity is unavailable")
@@ -369,12 +587,10 @@ def verify_run_budget(
     if not any(str(run.get("id")) == current_run_id for run in current_runs):
         fail("current workflow run is not yet visible in the budget ledger")
     total_limit = config["limits"]["maximum_claude_reviews_total"]
-    pilot_limit = config["limits"]["maximum_claude_reviews_per_pilot"]
     if len(current_runs) > total_limit:
         fail("total Claude review budget is exhausted")
-    title = f"U1 Claude review | {pilot_id}"
-    if sum(run.get("display_title") == title for run in current_runs) > pilot_limit:
-        fail("pilot Claude review budget is exhausted")
+    if any(run.get("display_title") != "U1 Claude review" for run in current_runs):
+        fail("executor workflow ledger contains non-opaque run metadata")
 
 
 def verify_remote_state(
@@ -677,12 +893,8 @@ Verdict: {result['verdict']}
 """
 
 
-def common_dispatch_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--pilot-id", required=True)
-    parser.add_argument("--pr-number", required=True, type=int)
-    parser.add_argument("--head-sha", required=True)
-    parser.add_argument("--reservation-run-id", required=True, type=int)
-    parser.add_argument("--request-id", required=True)
+def add_ticket_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--ticket-id", required=True, type=int)
 
 
 def main() -> int:
@@ -690,16 +902,16 @@ def main() -> int:
     parser.add_argument("--config", type=Path, default=Path("config/u1-executor.json"))
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate-config")
-    dispatch = subparsers.add_parser("validate-dispatch")
-    common_dispatch_arguments(dispatch)
+    dispatch = subparsers.add_parser("validate-ticket")
+    add_ticket_argument(dispatch)
     prepare = subparsers.add_parser("prepare")
-    common_dispatch_arguments(prepare)
+    add_ticket_argument(prepare)
     prepare.add_argument("--output-dir", type=Path, required=True)
     prompt = subparsers.add_parser("emit-prompt-env")
     prompt.add_argument("--input-dir", type=Path, required=True)
     prompt.add_argument("--github-env", type=Path, required=True)
     recheck = subparsers.add_parser("recheck")
-    common_dispatch_arguments(recheck)
+    add_ticket_argument(recheck)
     recheck.add_argument("--metadata", type=Path, required=True)
     capture = subparsers.add_parser("capture-output")
     capture.add_argument("--output", type=Path, required=True)
@@ -708,7 +920,7 @@ def main() -> int:
     render.add_argument("--metadata", type=Path, required=True)
     render.add_argument("--output", type=Path, required=True)
     publish = subparsers.add_parser("publish")
-    common_dispatch_arguments(publish)
+    add_ticket_argument(publish)
     publish.add_argument("--metadata", type=Path, required=True)
     publish.add_argument("--comment", type=Path, required=True)
     args = parser.parse_args()
@@ -743,39 +955,8 @@ def main() -> int:
             metadata = load_object(args.metadata)
             args.output.write_text(render_review(result, metadata), encoding="utf-8")
             return 0
-        if args.command == "publish":
-            pilot = validate_dispatch_values(config, pilots, args)
-            validate_identity(config)
-            token = os.environ.get("SEASON2_REVIEW_TOKEN", "")
-            executor_token = os.environ.get("EXECUTOR_GITHUB_TOKEN", "")
-            if not token or not executor_token:
-                fail("required review credentials are unavailable")
-            verify_run_budget(
-                config,
-                executor_token,
-                args.pilot_id,
-                os.environ.get("GITHUB_RUN_ID", ""),
-            )
-            live_metadata = verify_remote_state(config, pilot, args, token)
-            metadata = load_object(args.metadata)
-            if live_metadata != metadata:
-                fail("final publish state differs from the model-bound metadata")
-            body = args.comment.read_text(encoding="utf-8")
-            if not body.startswith(metadata.get("review_marker", "__missing_marker__") + "\n"):
-                fail("rendered review is not bound to the exact pilot and Head", INVALID)
-            if body.count("\nVerdict:") != 1 or f"\nHead SHA: {metadata.get('head_sha')}\n" not in body:
-                fail("rendered review provenance is malformed", INVALID)
-            api_json(
-                token,
-                f"/repos/{EXPECTED_SOURCE}/issues/{metadata['pr_number']}/comments",
-                method="POST",
-                payload={"body": body},
-            )
-            print("PUBLISHED")
-            return 0
-
-        pilot = validate_dispatch_values(config, pilots, args)
-        if args.command == "validate-dispatch":
+        validate_ticket(config, args.ticket_id)
+        if args.command == "validate-ticket":
             print("ALLOW")
             return 0
         validate_identity(config)
@@ -783,20 +964,36 @@ def main() -> int:
         executor_token = os.environ.get("EXECUTOR_GITHUB_TOKEN", "")
         if not source_token or not executor_token:
             fail("required review credentials are unavailable")
+        pilot, dispatch_args = resolve_dispatch_ticket(
+            config, pilots, args.ticket_id, source_token
+        )
         verify_run_budget(
             config,
             executor_token,
-            args.pilot_id,
             os.environ.get("GITHUB_RUN_ID", ""),
         )
-        metadata = verify_remote_state(config, pilot, args, source_token)
+        metadata = verify_remote_state(config, pilot, dispatch_args, source_token)
         if args.command == "prepare":
             prepare_workspace(source_token, metadata, args.output_dir)
             print("ALLOW")
             return 0
         expected_metadata = load_object(args.metadata)
         if metadata != expected_metadata:
-            fail("live pre-publish state differs from the model-bound metadata")
+            fail("live state differs from the model-bound metadata")
+        if args.command == "publish":
+            body = args.comment.read_text(encoding="utf-8")
+            if not body.startswith(metadata.get("review_marker", "__missing_marker__") + "\n"):
+                fail("rendered review is not bound to the exact pilot and Head", INVALID)
+            if body.count("\nVerdict:") != 1 or f"\nHead SHA: {metadata.get('head_sha')}\n" not in body:
+                fail("rendered review provenance is malformed", INVALID)
+            api_json(
+                source_token,
+                f"/repos/{EXPECTED_SOURCE}/issues/{metadata['pr_number']}/comments",
+                method="POST",
+                payload={"body": body},
+            )
+            print("PUBLISHED")
+            return 0
         print("ALLOW")
         return 0
     except GateError as error:
