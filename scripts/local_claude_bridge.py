@@ -113,7 +113,7 @@ def bounded_diff(repo: Path, base_sha: str, head_sha: str) -> str:
             "diff",
             "--no-ext-diff",
             "--no-color",
-            "--unified=40",
+            "--unified=3",
             base_sha,
             head_sha,
             "--",
