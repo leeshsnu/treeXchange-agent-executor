@@ -342,7 +342,11 @@ def decode_content(token: str, path: str, ref: str) -> str:
     return text
 
 
-def verify_run_budget(config: dict[str, Any], executor_token: str, pilot_id: str) -> None:
+def verify_run_budget(
+    config: dict[str, Any], executor_token: str, pilot_id: str, current_run_id: str
+) -> None:
+    if not re.fullmatch(r"[1-9][0-9]*", current_run_id):
+        fail("current workflow run identity is unavailable")
     approved = parse_time(config["activation"]["approved_at"], "approved_at")
     approved_filter = urllib.parse.quote(
         ">=" + approved.isoformat().replace("+00:00", "Z"), safe=""
@@ -362,6 +366,8 @@ def verify_run_budget(config: dict[str, Any], executor_token: str, pilot_id: str
         created = parse_time(run.get("created_at"), "workflow run created_at")
         if created >= approved and run.get("event") == "workflow_dispatch":
             current_runs.append(run)
+    if not any(str(run.get("id")) == current_run_id for run in current_runs):
+        fail("current workflow run is not yet visible in the budget ledger")
     total_limit = config["limits"]["maximum_claude_reviews_total"]
     pilot_limit = config["limits"]["maximum_claude_reviews_per_pilot"]
     if len(current_runs) > total_limit:
@@ -744,7 +750,12 @@ def main() -> int:
             executor_token = os.environ.get("EXECUTOR_GITHUB_TOKEN", "")
             if not token or not executor_token:
                 fail("required review credentials are unavailable")
-            verify_run_budget(config, executor_token, args.pilot_id)
+            verify_run_budget(
+                config,
+                executor_token,
+                args.pilot_id,
+                os.environ.get("GITHUB_RUN_ID", ""),
+            )
             live_metadata = verify_remote_state(config, pilot, args, token)
             metadata = load_object(args.metadata)
             if live_metadata != metadata:
@@ -772,7 +783,12 @@ def main() -> int:
         executor_token = os.environ.get("EXECUTOR_GITHUB_TOKEN", "")
         if not source_token or not executor_token:
             fail("required review credentials are unavailable")
-        verify_run_budget(config, executor_token, args.pilot_id)
+        verify_run_budget(
+            config,
+            executor_token,
+            args.pilot_id,
+            os.environ.get("GITHUB_RUN_ID", ""),
+        )
         metadata = verify_remote_state(config, pilot, args, source_token)
         if args.command == "prepare":
             prepare_workspace(source_token, metadata, args.output_dir)

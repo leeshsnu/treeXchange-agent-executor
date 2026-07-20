@@ -242,17 +242,18 @@ class SourceBoundaryTests(unittest.TestCase):
             return_value={"total_count": 2, "workflow_runs": []},
         ):
             with self.assertRaises(u1.GateError):
-                u1.verify_run_budget(config, "redacted", "U1-P1")
+                u1.verify_run_budget(config, "redacted", "U1-P1", "100")
 
     def test_per_pilot_budget_uses_minimized_public_run_name(self):
         config = active_config()
         runs = [
             {
+                "id": index + 1,
                 "created_at": "2026-07-18T09:00:00Z",
                 "event": "workflow_dispatch",
                 "display_title": "U1 Claude review | U1-P1",
             }
-            for _ in range(3)
+            for index in range(3)
         ]
         with mock.patch.object(
             u1,
@@ -260,7 +261,25 @@ class SourceBoundaryTests(unittest.TestCase):
             return_value={"total_count": len(runs), "workflow_runs": runs},
         ):
             with self.assertRaises(u1.GateError):
-                u1.verify_run_budget(config, "redacted", "U1-P1")
+                u1.verify_run_budget(config, "redacted", "U1-P1", "1")
+
+    def test_budget_denies_when_current_run_is_not_visible(self):
+        config = active_config()
+        runs = [
+            {
+                "id": 99,
+                "created_at": "2026-07-18T09:00:00Z",
+                "event": "workflow_dispatch",
+                "display_title": "U1 Claude review | U1-P1",
+            }
+        ]
+        with mock.patch.object(
+            u1,
+            "api_json",
+            return_value={"total_count": len(runs), "workflow_runs": runs},
+        ):
+            with self.assertRaisesRegex(u1.GateError, "not yet visible"):
+                u1.verify_run_budget(config, "redacted", "U1-P1", "100")
 
 
 class StaticWorkflowTests(unittest.TestCase):
