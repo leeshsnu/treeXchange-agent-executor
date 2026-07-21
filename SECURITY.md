@@ -5,7 +5,8 @@
 Only the user may install, rotate, or remove credentials. Do not put tokens in
 Issues, pull requests, files, logs, artifacts, repository variables, or chat.
 
-The protected `u1-claude` environment will eventually contain:
+The protected `u1-claude` environment contains two user-installed secrets whose
+values are never readable through GitHub after creation:
 
 - `CLAUDE_CODE_OAUTH_TOKEN`: the user's Claude Code credential.
 - `SEASON2_REVIEW_TOKEN`: a fine-grained GitHub token restricted to
@@ -13,7 +14,9 @@ The protected `u1-claude` environment will eventually contain:
   metadata read, Actions read, Issues read/write, and Pull requests read.
 
 The environment variable `U1_EXECUTOR_TRUSTED_SHA` must contain the exact full
-commit approved by the user. It is an external binding, not a secret.
+merged commit approved by the user. It is an external binding, not a secret,
+and remains unset until that final commit exists and receives exact-SHA
+approval.
 
 Do not configure these values while the activation packet is paused. Never use
 the account-wide classic PAT or a token that can write contents, workflows,

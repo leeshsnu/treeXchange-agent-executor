@@ -37,13 +37,18 @@ until a user approves and installs every activation value and credential.
 
 ## Activation
 
-Activation is intentionally not automated. A user must approve an exact
-executor commit and exact Season 2 policy commit, lock/protect `main`, configure
-the `u1-claude` environment, set its trusted-SHA variable, and install the two
-environment secrets described in [SECURITY.md](SECURITY.md).
+Activation is intentionally attended. A user must approve an exact executor
+commit and exact Season 2 policy commit, protect `main`, configure the
+`u1-claude` environment, set its trusted-SHA variable to the final merged
+executor commit, and install the two environment secrets described in
+[SECURITY.md](SECURITY.md).
 
-Until then, `config/u1-executor.json` is `proposed_paused`, and every dispatch
-stops before any credential or model call is used.
+The checked-in `approved_active` packet is necessary but never sufficient. A
+dispatch still fails before a model call unless the live environment SHA equals
+the exact running commit, the activation window is current, the fixed Issue and
+PR bindings match, the private reservation is live, the usage ledger is within
+budget, the global pause remains present, and the U1 kill switch has been
+removed by the attended activation decision. No automatic merge is authorized.
 
 ## Attended local bridge
 
