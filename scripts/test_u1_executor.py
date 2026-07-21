@@ -22,12 +22,34 @@ SPEC.loader.exec_module(u1)
 ROOT = Path(__file__).parents[1]
 
 
-def paused_config():
+def repository_config():
     return json.loads((ROOT / "config/u1-executor.json").read_text(encoding="utf-8"))
 
 
+def paused_config():
+    config = repository_config()
+    config["status"] = "proposed_paused"
+    config["activation"] = {
+        "enabled": False,
+        "approved_by": None,
+        "approved_at": None,
+        "expires_at": None,
+        "trusted_source_policy_sha": None,
+        "trusted_executor_sha_variable": "U1_EXECUTOR_TRUSTED_SHA",
+        "trusted_executor_sha_variable_verified": False,
+        "hard_cap_verified": False,
+        "actions_step_debug_disabled_verified": False,
+        "opaque_dispatch_verified": False,
+        "claude_credential_installed_by_user": False,
+        "season2_review_token_installed_by_user": False,
+    }
+    for pilot in config["pilots"]:
+        pilot["issue_number"] = None
+    return config
+
+
 def active_config():
-    config = paused_config()
+    config = repository_config()
     config["status"] = "approved_active"
     config["activation"] = {
         "enabled": True,
@@ -121,8 +143,8 @@ def reservation_archive(context):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_repository_paused_config_is_valid(self):
-        pilots = u1.validate_config(paused_config())
+    def test_repository_config_is_valid(self):
+        pilots = u1.validate_config(repository_config())
         self.assertEqual(set(pilots), {"U1-P1", "U1-P3"})
 
     def test_active_config_is_valid(self):

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "packet_id": "U1-PILOT-2026-01",
-  "status": "proposed_paused",
+  "status": "approved_active",
   "source_repository": "leeshsnu/treeXchange-season2",
   "source_base_branch": "main",
   "control_issue": {
@@ -11,18 +11,18 @@
     "u1_kill_switch_label": "control/u1-pause"
   },
   "activation": {
-    "enabled": false,
-    "approved_by": null,
-    "approved_at": null,
-    "expires_at": null,
-    "trusted_source_policy_sha": null,
+    "enabled": true,
+    "approved_by": "leeshsnu",
+    "approved_at": "2026-07-21T05:36:56Z",
+    "expires_at": "2026-07-28T05:36:56Z",
+    "trusted_source_policy_sha": "17ab66a6822b14de3c5e5cc033679301b12c3c58",
     "trusted_executor_sha_variable": "U1_EXECUTOR_TRUSTED_SHA",
-    "trusted_executor_sha_variable_verified": false,
-    "hard_cap_verified": false,
-    "actions_step_debug_disabled_verified": false,
-    "opaque_dispatch_verified": false,
-    "claude_credential_installed_by_user": false,
-    "season2_review_token_installed_by_user": false
+    "trusted_executor_sha_variable_verified": true,
+    "hard_cap_verified": true,
+    "actions_step_debug_disabled_verified": true,
+    "opaque_dispatch_verified": true,
+    "claude_credential_installed_by_user": true,
+    "season2_review_token_installed_by_user": true
   },
   "limits": {
     "additional_external_spend_krw": 0,
@@ -53,7 +53,7 @@
   "pilots": [
     {
       "pilot_id": "U1-P1",
-      "issue_number": null,
+      "issue_number": 8,
       "branch": "codex/u1-p1-model-readme-boundary",
       "maker_family": "Codex",
       "reviewer_family": "Claude",
@@ -61,7 +61,7 @@
     },
     {
       "pilot_id": "U1-P3",
-      "issue_number": null,
+      "issue_number": 9,
       "branch": "codex/u1-p3-serving-readme-truthful-state",
       "maker_family": "Codex",
       "reviewer_family": "Claude",
