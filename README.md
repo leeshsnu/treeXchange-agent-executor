@@ -4,10 +4,14 @@ This public repository is the credential-bearing execution boundary for tightly
 scoped treeXchange agent pilots. It contains no Season 2 source code and accepts
 no caller-supplied prompt.
 
-The first supported operation is a Claude exact-Head review for the fixed U1
-documentation pilots in `leeshsnu/treeXchange-season2`. The workflow is
-dispatch-only, serial, SHA-bound, path-bound, and fail-closed. It remains inert
-until a user approves and installs every activation value and credential.
+The executor supports two bounded U1 operations for
+`leeshsnu/treeXchange-season2`: Claude exact-Head review of the fixed P1/P3
+documentation pilots, and a proposed Claude Maker lane for P2. The Maker lane
+can publish a validated full-file proposal only to the fixed private P2 Issue;
+it cannot write source, create a branch or PR, or merge. Both workflows are
+dispatch-only, share one global concurrency group, and are SHA-bound,
+path-bound, and fail-closed. The Maker lane remains `proposed_paused` until its
+exact implementation and activation packet receive separate approval.
 
 ## Trust boundary
 
@@ -25,6 +29,12 @@ until a user approves and installs every activation value and credential.
   any future Fable workflow is activated.
 - Claude cannot merge, push, deploy, clear pause, or claim general work.
 - Model output is schema-validated before a trusted publisher posts it.
+- Maker output is limited to one complete proposal for
+  `services/model/HANDOFF_NEEDED.md`. It is posted only to private Issue `#10`
+  with a content digest and executor provenance; a separate Codex transport
+  must apply it and Codex must independently review the resulting exact Head.
+- The Maker path deliberately reuses the read/Issues-only Season 2 token. No
+  contents-write or pull-request-write credential is introduced.
 - The executor never stores Season 2 source or review inputs as artifacts.
 - Action logs are public, so private file contents and model output are never
   printed.
@@ -43,12 +53,14 @@ commit and exact Season 2 policy commit, protect `main`, configure the
 executor commit, and install the two environment secrets described in
 [SECURITY.md](SECURITY.md).
 
-The checked-in `approved_active` packet is necessary but never sufficient. A
-dispatch still fails before a model call unless the live environment SHA equals
-the exact running commit, the activation window is current, the fixed Issue and
-PR bindings match, the private reservation is live, the usage ledger is within
+An `approved_active` packet is necessary but never sufficient. A dispatch still
+fails before a model call unless the live environment SHA equals the exact
+running commit, the activation window is current, the fixed Issue and source
+bindings match, the private reservation is live, the usage ledger is within
 budget, the global pause remains present, and the U1 kill switch has been
-removed by the attended activation decision. No automatic merge is authorized.
+removed by the attended activation decision. The review and Maker packets are
+approved independently but must bind the same final source and executor SHAs.
+No automatic merge is authorized.
 
 ## Attended local bridge
 

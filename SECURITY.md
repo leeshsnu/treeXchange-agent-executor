@@ -13,6 +13,10 @@ values are never readable through GitHub after creation:
   `leeshsnu/treeXchange-season2`, with only repository contents read,
   metadata read, Actions read, Issues read/write, and Pull requests read.
 
+The token name is retained for compatibility, but the bounded Maker lane uses
+only its existing contents-read, Actions-read, and Issues-write permissions. It
+must not be replaced with a token that can write contents or pull requests.
+
 The environment variable `U1_EXECUTOR_TRUSTED_SHA` must contain the exact full
 merged commit approved by the user. It is an external binding, not a secret,
 and remains unset until that final commit exists and receives exact-SHA
@@ -28,8 +32,10 @@ Before activation:
 
 1. Protect and lock `main`; disable force pushes and deletion.
 2. Restrict the `u1-claude` environment to the protected `main` branch.
-3. Keep `config/u1-executor.json` bound to one Season 2 policy SHA, two fixed
-   pilots, a seven-day expiry, zero additional spend, and one-model concurrency.
+3. Keep `config/u1-executor.json` bound to one Season 2 policy SHA and the two
+   fixed review pilots. Keep `config/u1-maker.json` bound to the same exact SHA,
+   fixed P2 Issue/path, a seven-day maximum window, zero additional spend,
+   source-write disabled, and the same one-model concurrency group.
 4. Set `U1_EXECUTOR_TRUSTED_SHA` to the approved executor commit.
 5. Install the two environment secrets independently through GitHub Settings.
 6. Keep `control/pause` and `control/u1-pause` on the Season 2 control Issue
@@ -43,6 +49,23 @@ Before activation:
    SHA and its workflow inputs.
 
 Any missing, inaccessible, stale, duplicate, or malformed state is a denial.
+
+## Claude Maker proposal boundary
+
+The P2 Maker workflow accepts only an opaque reservation ticket. It resolves
+the fixed Issue, base SHA, branch name, and one allowed path from the private
+reservation artifact after entering the protected environment. Claude receives
+only the current bounded UTF-8 document, fixed Maker boundary, and metadata as
+delimited untrusted evidence. All file, shell, GitHub, web, MCP, and delegation
+tools are disabled.
+
+The trusted publisher rejects oversized output, credential-shaped content,
+hidden control markup, fence escape text, unchanged proposals, stale leases,
+an existing pilot PR, duplicate tickets, duplicate proposal markers, pause
+drift, and executor/source SHA drift. A valid proposal is posted only to private
+Season 2 Issue `#10`, with its SHA-256 digest and run provenance. It cannot
+write source or open a PR. Codex transport and exact-Head review remain separate
+steps, and neither the proposal nor its publication authorizes merge.
 
 ## Local bootstrap boundary
 
