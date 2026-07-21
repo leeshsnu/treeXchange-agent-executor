@@ -91,7 +91,9 @@ activation state are independently verified.
 The attended bridge cap is an executor safety policy, not an Anthropic account
 limit: at most 6 calls per work-item review window, 2 new windows per work item
 per UTC day, and 12 calls per repository per UTC day. Exhausting one window
-blocks that Gate while unrelated authorized work can continue.
+blocks that Gate while unrelated authorized work can continue. An exact diff
+may consume at most one call per approved model, allowing a bounded Fable 5 and
+Opus 4.8 cross-review while still denying repeated calls to either model.
 
 ## Residual administrative risk
 

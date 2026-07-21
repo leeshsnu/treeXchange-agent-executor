@@ -236,9 +236,13 @@ def reserve_attempt(path: Path, attempt: dict[str, Any]) -> dict[str, int]:
             fail("work item daily review-window cap has been reached")
         if any(
             call.get("diff_sha256") == attempt["diff_sha256"]
+            and (
+                call.get("requested_model") is None
+                or call.get("requested_model") == attempt["requested_model"]
+            )
             for call in ledger["calls"]
         ):
-            fail("this exact review diff has already consumed a Claude call")
+            fail("this exact review diff and model have already consumed a Claude call")
         ledger["calls"].append(attempt)
         save_private_json(path, ledger)
         return {

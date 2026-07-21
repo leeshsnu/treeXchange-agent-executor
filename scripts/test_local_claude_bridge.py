@@ -29,6 +29,7 @@ def ledger_attempt(index, *, work_item="OPS-03", window="ops-03-window-01", day=
         "base_sha": "a" * 40,
         "head_sha": "b" * 40,
         "diff_sha256": f"diff-{index}",
+        "requested_model": bridge.DEFAULT_MODEL,
         "work_item_id": work_item,
         "review_window": window,
         "status": "started",
@@ -200,12 +201,39 @@ class BridgeTests(unittest.TestCase):
 
     def test_duplicate_diff_is_denied_before_model_call(self):
         with tempfile.TemporaryDirectory() as directory:
-            ledger = Path(directory) / "ledger.json"
-            ledger.write_text(
-                json.dumps({"schema_version": 1, "calls": [{"diff_sha256": "abc"}]}),
-                encoding="utf-8",
-            )
-            self.assertEqual(bridge.load_ledger(ledger)["calls"][0]["diff_sha256"], "abc")
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            first = ledger_attempt(1)
+            first["diff_sha256"] = "same-diff"
+            bridge.reserve_attempt(ledger, first)
+            duplicate = ledger_attempt(2)
+            duplicate["diff_sha256"] = "same-diff"
+            with self.assertRaisesRegex(bridge.BridgeError, "diff and model"):
+                bridge.reserve_attempt(ledger, duplicate)
+
+    def test_same_diff_allows_one_independent_review_per_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            opus = ledger_attempt(1)
+            opus["diff_sha256"] = "same-diff"
+            bridge.reserve_attempt(ledger, opus)
+            fable = ledger_attempt(2)
+            fable["diff_sha256"] = "same-diff"
+            fable["requested_model"] = bridge.ELEVATED_MODEL
+            result = bridge.reserve_attempt(ledger, fable)
+            self.assertEqual(result["window_calls"], 2)
+
+    def test_legacy_duplicate_without_model_remains_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            legacy = ledger_attempt(1)
+            legacy["diff_sha256"] = "same-diff"
+            legacy.pop("requested_model")
+            bridge.save_private_json(ledger, {"schema_version": 1, "calls": [legacy]})
+            fable = ledger_attempt(2)
+            fable["diff_sha256"] = "same-diff"
+            fable["requested_model"] = bridge.ELEVATED_MODEL
+            with self.assertRaisesRegex(bridge.BridgeError, "diff and model"):
+                bridge.reserve_attempt(ledger, fable)
 
     def test_concurrent_duplicate_reservation_allows_exactly_one_call(self):
         with tempfile.TemporaryDirectory() as directory:
