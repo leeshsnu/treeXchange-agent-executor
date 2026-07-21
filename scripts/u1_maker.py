@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -546,8 +547,21 @@ def validate_result(result: dict[str, Any], *, current_content: str | None = Non
     return result
 
 
-def render_proposal(result: dict[str, Any], metadata: dict[str, Any]) -> str:
-    result = validate_result(result)
+def load_current_content(path: Path) -> str:
+    try:
+        raw = path.read_bytes()
+        current = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        core.fail("bounded current Maker document is unavailable or malformed", core.INVALID)
+    if len(raw) > 50_000:
+        core.fail("bounded current Maker document is oversized", core.INVALID)
+    return current
+
+
+def render_proposal(
+    result: dict[str, Any], metadata: dict[str, Any], *, current_content: str
+) -> str:
+    result = validate_result(result, current_content=current_content)
     executor_sha = os.environ.get("GITHUB_SHA", "")
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
@@ -591,6 +605,21 @@ This is a bounded proposal only. It does not create a branch, change source, ope
 """
 
 
+def verify_rendered_proposal(
+    body: str,
+    result: dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    current_content: str,
+) -> None:
+    expected = render_proposal(result, metadata, current_content=current_content)
+    if not hmac.compare_digest(body, expected):
+        core.fail(
+            "rendered Maker proposal differs from the revalidated result",
+            core.INVALID,
+        )
+
+
 def add_ticket_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ticket-id", required=True, type=int)
 
@@ -617,10 +646,13 @@ def main() -> int:
     render = subparsers.add_parser("render")
     render.add_argument("--result", type=Path, required=True)
     render.add_argument("--metadata", type=Path, required=True)
+    render.add_argument("--current", type=Path, required=True)
     render.add_argument("--output", type=Path, required=True)
     publish = subparsers.add_parser("publish")
     add_ticket_argument(publish)
     publish.add_argument("--metadata", type=Path, required=True)
+    publish.add_argument("--result", type=Path, required=True)
+    publish.add_argument("--current", type=Path, required=True)
     publish.add_argument("--comment", type=Path, required=True)
     args = parser.parse_args()
 
@@ -655,7 +687,11 @@ def main() -> int:
         if args.command == "render":
             result = core.load_object(args.result)
             metadata = core.load_object(args.metadata)
-            args.output.write_text(render_proposal(result, metadata), encoding="utf-8")
+            current = load_current_content(args.current)
+            args.output.write_text(
+                render_proposal(result, metadata, current_content=current),
+                encoding="utf-8",
+            )
             return 0
 
         validate_ticket(config, args.ticket_id)
@@ -681,6 +717,11 @@ def main() -> int:
             core.fail("live Maker state differs from the model-bound metadata")
         if args.command == "publish":
             body = args.comment.read_text(encoding="utf-8")
+            result = core.load_object(args.result)
+            current = load_current_content(args.current)
+            verify_rendered_proposal(
+                body, result, metadata, current_content=current
+            )
             marker = metadata.get("proposal_marker", "__missing_marker__")
             if not body.startswith(marker + "\n"):
                 core.fail("rendered Maker proposal is not bound to the fixed pilot", core.INVALID)

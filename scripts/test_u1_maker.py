@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 import zipfile
@@ -287,11 +288,55 @@ class ProposalTests(unittest.TestCase):
             {"GITHUB_SHA": "f" * 40, "GITHUB_RUN_ID": "456", "GITHUB_RUN_ATTEMPT": "1"},
             clear=True,
         ):
-            rendered = maker.render_proposal(result, metadata)
+            rendered = maker.render_proposal(result, metadata, current_content="old")
         digest = hashlib.sha256(result["proposed_content"].encode("utf-8")).hexdigest()
         self.assertIn("Requested Reviewer: Codex", rendered)
         self.assertIn("Proposed Content SHA-256: " + digest, rendered)
         self.assertIn("does not create a branch", rendered)
+
+    def test_render_and_publish_reapply_current_content_binding(self):
+        metadata = {
+            "proposal_marker": "<!-- treeXchange-u1-maker:U1-P2:" + "a" * 40 + ":request-maker-1234 -->",
+            "base_sha": "a" * 40,
+            "allowed_path": maker.EXPECTED_PILOT["allowed_path"],
+            "reservation_run_id": 42,
+            "request_id": "request-maker-1234",
+        }
+        result = valid_result("changed")
+        environment = {
+            "GITHUB_SHA": "f" * 40,
+            "GITHUB_RUN_ID": "456",
+            "GITHUB_RUN_ATTEMPT": "1",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            rendered = maker.render_proposal(
+                result, metadata, current_content="current"
+            )
+            maker.verify_rendered_proposal(
+                rendered, result, metadata, current_content="current"
+            )
+            with self.assertRaisesRegex(core.GateError, "differs"):
+                maker.verify_rendered_proposal(
+                    rendered + "tampered", result, metadata, current_content="current"
+                )
+            with self.assertRaisesRegex(core.GateError, "must change"):
+                maker.verify_rendered_proposal(
+                    rendered, valid_result("current"), metadata, current_content="current"
+                )
+
+    def test_maker_uses_collision_checked_github_env_writer(self):
+        class FixedDigest:
+            def hexdigest(self):
+                return "collision"
+
+        value = "safe\nTREEXCHANGE_collision\nunsafe"
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            core.hashlib, "sha256", return_value=FixedDigest()
+        ):
+            path = Path(directory) / "github-env"
+            with self.assertRaisesRegex(core.GateError, "safely written"):
+                core.append_github_env(path, "U1_MAKER_PROMPT", value)
+            self.assertFalse(path.exists())
 
     def test_unchanged_proposal_is_rejected(self):
         result = valid_result("same")
@@ -387,6 +432,16 @@ class StaticWorkflowTests(unittest.TestCase):
         self.assertRegex(self.workflow, r"--disallowedTools[^\n]*Write")
         self.assertIn("mcp__github", self.workflow)
 
+    def test_inline_maker_schema_matches_the_versioned_schema(self):
+        match = re.search(r"--json-schema '(\{.*\})'", self.workflow)
+        self.assertIsNotNone(match)
+        inline = json.loads(match.group(1))
+        versioned = json.loads(
+            (ROOT / "schemas/u1-maker-output.schema.json").read_text(encoding="utf-8")
+        )
+        versioned.pop("$schema", None)
+        self.assertEqual(inline, versioned)
+
     def test_maker_and_reviewer_share_one_global_concurrency_group(self):
         group = "group: u1-claude-opaque-ticket-global"
         self.assertIn(group, self.workflow)
@@ -400,6 +455,8 @@ class StaticWorkflowTests(unittest.TestCase):
         self.assertIn("EXECUTOR_GITHUB_TOKEN", publish)
         self.assertIn("U1_EXECUTOR_TRUSTED_SHA", publish)
         self.assertIn('--ticket-id "$TICKET_ID"', publish)
+        self.assertIn("--result maker-result.json", publish)
+        self.assertIn("--current maker_input/CURRENT.md", publish)
         self.assertNotIn("pulls/", self.workflow)
 
 

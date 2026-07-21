@@ -206,6 +206,8 @@ def locked_ledger(path: Path):
 
 def reserve_attempt(path: Path, attempt: dict[str, Any]) -> dict[str, int]:
     with locked_ledger(path):
+        if attempt.get("requested_model") not in ALLOWED_MODELS:
+            fail("Claude call reservation model is outside the approved allowlist", INVALID)
         ledger = load_ledger(path)
         called_day = attempt["called_at"][:10]
         daily_calls = [

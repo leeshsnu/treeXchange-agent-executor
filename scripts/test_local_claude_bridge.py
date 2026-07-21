@@ -222,6 +222,14 @@ class BridgeTests(unittest.TestCase):
             result = bridge.reserve_attempt(ledger, fable)
             self.assertEqual(result["window_calls"], 2)
 
+    def test_call_reservation_rejects_unapproved_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            attempt = ledger_attempt(1)
+            attempt["requested_model"] = "claude-unapproved"
+            with self.assertRaisesRegex(bridge.BridgeError, "allowlist"):
+                bridge.reserve_attempt(ledger, attempt)
+
     def test_legacy_duplicate_without_model_remains_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Path(directory) / ".agent-state" / "ledger.json"

@@ -105,6 +105,7 @@ jobs:
           python3 scripts/u1_maker.py render
           --result maker-result.json
           --metadata maker_input/METADATA.json
+          --current maker_input/CURRENT.md
           --output maker-comment.md
       - name: Publish only to the fixed private U1-P2 Issue
         env:
@@ -115,6 +116,8 @@ jobs:
           python3 scripts/u1_maker.py publish
           --ticket-id "$TICKET_ID"
           --metadata maker_input/METADATA.json
+          --result maker-result.json
+          --current maker_input/CURRENT.md
           --comment maker-comment.md
       - name: Remove private Maker material from the runner
         if: always()

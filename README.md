@@ -58,8 +58,9 @@ fails before a model call unless the live environment SHA equals the exact
 running commit, the activation window is current, the fixed Issue and source
 bindings match, the private reservation is live, the usage ledger is within
 budget, the global pause remains present, and the U1 kill switch has been
-removed by the attended activation decision. The review and Maker packets are
-approved independently but must bind the same final source and executor SHAs.
+removed by the attended activation decision. The review and Maker packets use
+one attended activation approval and must carry the same complete activation
+object, final source SHA, executor SHA, window, and budget bindings.
 No automatic merge is authorized.
 
 ## Attended local bridge

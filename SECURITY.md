@@ -67,6 +67,18 @@ Season 2 Issue `#10`, with its SHA-256 digest and run provenance. It cannot
 write source or open a PR. Codex transport and exact-Head review remain separate
 steps, and neither the proposal nor its publication authorizes merge.
 
+The render step revalidates the proposal against the exact fetched current
+document. Immediately before publication, the trusted publisher revalidates
+both files, deterministically renders the expected comment again, and requires
+byte-for-byte equality. The displayed content digest therefore covers the same
+complete file content that is posted.
+
+The review and Maker workflows share one GitHub concurrency group. GitHub may
+replace an older pending run when another run enters the same group; this is a
+bounded availability condition, not authorization to consume or reuse the
+replaced run's opaque ticket. The replaced operation must receive a new live
+reservation and attended dispatch.
+
 ## Local bootstrap boundary
 
 `scripts/local_claude_bridge.py` uses the user's existing local Claude Code

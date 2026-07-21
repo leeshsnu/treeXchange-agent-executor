@@ -7,7 +7,9 @@ python3 -m json.tool config/u1-executor.json >/dev/null
 python3 -m json.tool config/u1-maker.json >/dev/null
 python3 -m json.tool schemas/u1-review-output.schema.json >/dev/null
 python3 -m json.tool schemas/u1-maker-output.schema.json >/dev/null
-python3 -m json.tool reviews/2026-07-18-executor-pr1-claude-review.json >/dev/null
+for review in reviews/*.json; do
+  python3 -m json.tool "$review" >/dev/null
+done
 python3 -m py_compile \
   scripts/u1_executor.py \
   scripts/u1_maker.py \
