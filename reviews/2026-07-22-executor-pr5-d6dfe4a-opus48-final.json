@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "9f98582a7f88fe049e232e0d246bea6bba2d5d3a",
+  "head_sha": "d6dfe4a1e25ce224ded666686f12ba63cb4ca15f",
+  "diff_sha256": "77735fdc406496c8be721d854f211670e9eb2170e53c3fd2ec38eabb202b32a6",
+  "task_profile": "standard",
+  "requested_model": "claude-opus-4-8",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "APPROVE",
+    "summary": "The Codex-authored change adds a bounded Claude Maker proposal lane for the fixed U1-P2 pilot. It is dispatch-only, SHA/path/Issue-bound, no-tools, schema-validated, and fail-closed. Source write, PR, and merge are structurally disabled; the reused token keeps contents-read/Issues-write only. Config defaults to proposed_paused; activation requires the same attended packet as review. Render/publish revalidate current content, re-render deterministically, and require byte-for-byte equality with UTF-8 byte compare (fixes the prior non-ASCII compare_digest defect). Per-model duplicate relaxation is guarded by an independent allowlist check. Tests cover budgets, opaque tickets, schema drift, injection markup, and provenance. No open P0/P1/P2 findings identified within the supplied diff.",
+    "findings": [
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "validate_review_binding short-circuits when config status is not approved_active, so a proposed_paused Maker packet skips review-binding equality checks. Safe because require_active blocks all credential/model paths while paused, but the coupling is implicit and depends on that ordering holding elsewhere."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "append_github_env, decode_content, clean_text, SECRET_PATTERNS, and parse_reservation_archive live in u1_executor and are not in this diff. Their fail-closed behavior (delimiter collision rejection, secret detection) is asserted only via a mocked FixedDigest test, so correctness rests on unshown implementation."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "The GitHub run budget and opaque-ticket resolution trust GitHub API pagination completeness (total_count == len). A malformed or truncated response denies, which is fail-closed, but relies on the source API reporting counts honestly; no independent cross-check exists."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "Prior non-ASCII hmac.compare_digest publication defect is remediated: verify_rendered_proposal now compares UTF-8 byte sequences and adversarial render/tamper/unchanged tests use Korean content, proving fail-closed byte equality."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "Per-model duplicate relaxation cannot bypass the model allowlist: reserve_attempt rejects any requested_model outside ALLOWED_MODELS before ledger logic, and a legacy no-model entry remains fail-closed, both proven by tests."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "Inline workflow --json-schema is proven identical to schemas/u1-maker-output.schema.json by a drift test, and quality-gate greps block write permissions (contents/pull-requests/issues/deployments) and non-dispatch triggers on both workflows."
+      }
+    ],
+    "verification": [
+      "Config defaults to proposed_paused with all activation flags false and source_write_allowed false; validate_config rejects drift, over-7-day windows, and enabled source write.",
+      "No-tools Maker: workflow sets --tools \"\", disallows Read/Bash/Edit/Write/Web/Task/Glob/Grep/mcp, and asserts model claude-opus-4-8 via static tests.",
+      "Render then publish revalidate current content, deterministically re-render, and require byte-for-byte UTF-8 equality; tamper and unchanged cases raise GateError.",
+      "Duplicate diff reservation is denied per model; unapproved models rejected before ledger; legacy no-model entries stay fail-closed.",
+      "Publication targets only private Issue #10 comments; no pulls/ or contents-write path exists and quality-gate greps enforce read-only token.",
+      "Opaque ticket resolves to one live reservation artifact, matching title/branch/SHA, and denies when an open pilot PR exists."
+    ],
+    "requirement_coverage": [
+      "Credential exposure: reuses existing read/Issues-only token; workflow forbids write scopes and never prints private content.",
+      "Budget bypass: total and per-pilot Claude operation budgets enforced in both private reservation ledger and public workflow-run ledger.",
+      "Unsafe automation: source write, branch, PR, and merge structurally disabled; forbidden_effects enumerated and validated.",
+      "Fail-closed: paused default, missing/stale/duplicate/malformed state denies, incomplete API pagination denies, provenance mismatch denies.",
+      "Unsupported claims: prompt boundary forbids inventing measurements/status; injection, mentions, control markup, and secret-shaped content rejected.",
+      "Tests prove claims: schema-drift, budget, opaque-ticket single-use, non-ASCII equality, and collision-checked env writer are exercised."
+    ],
+    "residual_risk": [
+      "Correctness of shared u1_executor helpers (env writer, secret patterns, archive parser) is not visible in this diff and only indirectly tested.",
+      "Activation and token-permission enforcement depend on attended operator steps in SECURITY.md that cannot be verified by the diff alone.",
+      "Budget and reservation integrity rely on trusting GitHub API count fields; a compromised API surface could misreport, though it fails closed on inconsistency."
+    ]
+  }
+}

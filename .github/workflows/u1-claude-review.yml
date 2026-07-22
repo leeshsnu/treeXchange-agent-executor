@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: u1-claude-opaque-ticket-global-review
+  group: u1-claude-opaque-ticket-global
   cancel-in-progress: false
 
 jobs:
@@ -62,20 +62,18 @@ jobs:
           python3 scripts/u1_executor.py prepare \
             --ticket-id "$TICKET_ID" \
             --output-dir review_input
-      - name: Embed sanitized evidence without granting file tools
+      - name: Write sanitized evidence to a private runner file
         run: >-
-          python3 scripts/u1_executor.py emit-prompt-env
+          python3 scripts/u1_executor.py emit-prompt-file
           --input-dir review_input
-          --github-env "$GITHUB_ENV"
+          --output review_input/PROMPT.md
       - name: Run fixed Opus 4.8 prompt against embedded sanitized evidence
         id: claude
-        uses: anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32
+        uses: anthropics/claude-code-action/base-action@3553f84341b92da26052e28acf1aa898f9511f32
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ github.token }}
-          display_report: false
           show_full_output: false
-          prompt: ${{ env.U1_REVIEW_PROMPT }}
+          prompt_file: review_input/PROMPT.md
           claude_args: >-
             --model claude-opus-4-8
             --max-turns 2
@@ -85,9 +83,10 @@ jobs:
             --disallowedTools Read,Bash,Edit,Write,WebSearch,WebFetch,Task,Glob,Grep,NotebookEditCell,mcp__github,mcp__file
             --json-schema '{"type":"object","additionalProperties":false,"required":["verdict","summary","findings","verification","requirement_coverage","residual_risk"],"properties":{"verdict":{"type":"string","enum":["APPROVE","CHANGES_REQUESTED"]},"summary":{"type":"string","minLength":1,"maxLength":1000},"findings":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,"required":["severity","status","finding"],"properties":{"severity":{"type":"string","enum":["P0","P1","P2","P3","none"]},"status":{"type":"string","enum":["open","closed"]},"finding":{"type":"string","minLength":1,"maxLength":1000}}}},"verification":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":500}},"requirement_coverage":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":500}},"residual_risk":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":500}}}}'
       - name: Capture and validate structured output without logging it
-        env:
-          STRUCTURED_OUTPUT: ${{ steps.claude.outputs.structured_output }}
-        run: python3 scripts/u1_executor.py capture-output --output model-result.json
+        run: >-
+          python3 scripts/u1_executor.py capture-output
+          --execution-file "$RUNNER_TEMP/claude-execution-output.json"
+          --output model-result.json
       - name: Recheck exact live state before publication
         env:
           EXECUTOR_GITHUB_TOKEN: ${{ github.token }}
@@ -115,4 +114,4 @@ jobs:
             --comment review-comment.md
       - name: Remove private review material from the runner
         if: always()
-        run: rm -rf review_input model-result.json review-comment.md
+        run: rm -rf review_input model-result.json review-comment.md "$RUNNER_TEMP/claude-execution-output.json"

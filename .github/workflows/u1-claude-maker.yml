@@ -1,0 +1,121 @@
+name: U1 Claude bounded Maker proposal
+run-name: U1 Claude maker | ticket ${{ inputs.ticket_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticket_id:
+        description: Opaque live Season 2 Maker reservation ticket
+        required: true
+        type: number
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: u1-claude-opaque-ticket-global
+  cancel-in-progress: false
+
+jobs:
+  paused-gate:
+    if: github.run_attempt == 1 && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout exact executor without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Validate paused packet and opaque dispatch
+        env:
+          TICKET_ID: ${{ inputs.ticket_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python3 scripts/u1_maker.py validate-config
+          python3 scripts/u1_maker.py validate-ticket --ticket-id "$TICKET_ID"
+
+  propose:
+    needs: paused-gate
+    if: github.run_attempt == 1 && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: u1-claude
+    env:
+      TICKET_ID: ${{ inputs.ticket_id }}
+      GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Checkout exact trusted executor without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify live policy, lease, budget, pause, Issue, base, and path
+        env:
+          EXECUTOR_GITHUB_TOKEN: ${{ github.token }}
+          SEASON2_REVIEW_TOKEN: ${{ secrets.SEASON2_REVIEW_TOKEN }}
+          U1_EXECUTOR_TRUSTED_SHA: ${{ vars.U1_EXECUTOR_TRUSTED_SHA }}
+        run: |
+          python3 scripts/u1_maker.py prepare \
+            --ticket-id "$TICKET_ID" \
+            --output-dir maker_input
+      - name: Write sanitized Maker evidence to a private runner file
+        run: >-
+          python3 scripts/u1_maker.py emit-prompt-file
+          --input-dir maker_input
+          --output maker_input/PROMPT.md
+      - name: Run fixed Opus 4.8 Maker prompt
+        id: claude
+        uses: anthropics/claude-code-action/base-action@3553f84341b92da26052e28acf1aa898f9511f32
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: false
+          prompt_file: maker_input/PROMPT.md
+          claude_args: >-
+            --model claude-opus-4-8
+            --max-turns 2
+            --tools ""
+            --strict-mcp-config
+            --setting-sources ""
+            --disallowedTools Read,Bash,Edit,Write,WebSearch,WebFetch,Task,Glob,Grep,NotebookEditCell,mcp__github,mcp__file
+            --json-schema '{"type":"object","additionalProperties":false,"required":["operation","summary","proposed_content","verification","residual_risk"],"properties":{"operation":{"type":"string","enum":["maker_proposal"]},"summary":{"type":"string","minLength":1,"maxLength":1000},"proposed_content":{"type":"string","minLength":1,"maxLength":20000},"verification":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":500}},"residual_risk":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":500}}}}'
+      - name: Capture and validate the bounded proposal without logging it
+        run: >-
+          python3 scripts/u1_maker.py capture-output
+          --input-dir maker_input
+          --execution-file "$RUNNER_TEMP/claude-execution-output.json"
+          --output maker-result.json
+      - name: Recheck exact live state before rendering
+        env:
+          EXECUTOR_GITHUB_TOKEN: ${{ github.token }}
+          SEASON2_REVIEW_TOKEN: ${{ secrets.SEASON2_REVIEW_TOKEN }}
+          U1_EXECUTOR_TRUSTED_SHA: ${{ vars.U1_EXECUTOR_TRUSTED_SHA }}
+        run: >-
+          python3 scripts/u1_maker.py recheck
+          --ticket-id "$TICKET_ID"
+          --metadata maker_input/METADATA.json
+      - name: Render trusted bounded Maker proposal
+        run: >-
+          python3 scripts/u1_maker.py render
+          --result maker-result.json
+          --metadata maker_input/METADATA.json
+          --current maker_input/CURRENT.md
+          --output maker-comment.md
+      - name: Publish only to the fixed private U1-P2 Issue
+        env:
+          EXECUTOR_GITHUB_TOKEN: ${{ github.token }}
+          SEASON2_REVIEW_TOKEN: ${{ secrets.SEASON2_REVIEW_TOKEN }}
+          U1_EXECUTOR_TRUSTED_SHA: ${{ vars.U1_EXECUTOR_TRUSTED_SHA }}
+        run: >-
+          python3 scripts/u1_maker.py publish
+          --ticket-id "$TICKET_ID"
+          --metadata maker_input/METADATA.json
+          --result maker-result.json
+          --current maker_input/CURRENT.md
+          --comment maker-comment.md
+      - name: Remove private Maker material from the runner
+        if: always()
+        run: rm -rf maker_input maker-result.json maker-comment.md "$RUNNER_TEMP/claude-execution-output.json"

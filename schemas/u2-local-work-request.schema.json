@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://treexchange.local/schemas/u2-local-work-request.schema.json",
+  "title": "treeXchange U2 local Claude work request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "work_item_id",
+    "window_id",
+    "role",
+    "repository",
+    "branch",
+    "base_sha",
+    "target_sha",
+    "risk_class",
+    "task_profile",
+    "objective",
+    "acceptance_criteria",
+    "read_paths",
+    "allowed_paths",
+    "maximum_turns",
+    "expires_at",
+    "control_release_id",
+    "budget_reservation_id",
+    "controller_key_id",
+    "nonce",
+    "controller_signature"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "request_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{7,95}$"},
+    "work_item_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9-]{1,31}$"},
+    "window_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{7,63}$"},
+    "role": {"enum": ["repository_reviewer", "scoped_maker"]},
+    "repository": {
+      "enum": [
+        "leeshsnu/treeXchange-agent-executor",
+        "leeshsnu/treeXchange-season2"
+      ]
+    },
+    "branch": {"type": "string", "pattern": "^claude/[A-Za-z0-9._/-]{1,120}$"},
+    "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "target_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "risk_class": {"const": "low"},
+    "task_profile": {"enum": ["standard", "advanced", "insight", "design"]},
+    "objective": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {"type": "string", "minLength": 1, "maxLength": 1000}
+    },
+    "read_paths": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 24,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 240}
+    },
+    "allowed_paths": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 240}
+    },
+    "maximum_turns": {"type": "integer", "minimum": 1, "maximum": 8},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "control_release_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{7,95}$"
+    },
+    "budget_reservation_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{7,95}$"
+    },
+    "controller_key_id": {"const": "u2-controller-v1"},
+    "nonce": {"type": "string", "pattern": "^[a-f0-9]{32,64}$"},
+    "controller_signature": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

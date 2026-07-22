@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "9f98582a7f88fe049e232e0d246bea6bba2d5d3a",
+  "head_sha": "d6dfe4a1e25ce224ded666686f12ba63cb4ca15f",
+  "diff_sha256": "77735fdc406496c8be721d854f211670e9eb2170e53c3fd2ec38eabb202b32a6",
+  "task_profile": "advanced",
+  "requested_model": "claude-fable-5",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "CHANGES_REQUESTED",
+    "summary": "The Maker lane is broadly fail-closed: paused-by-default packet, opaque one-use ticket, no-tools schema-bound model call, read-only GITHUB_TOKEN, deterministic re-render equality before publication, and per-model bridge allowlisting with fail-closed legacy ledger handling. However, one open confidentiality defect remains: the private Season 2 document travels through a workflow-expression action input and the model output through a step-level env expression, both of which GitHub renders into public Action logs, contradicting the repository's explicit never-printed guarantee.",
+    "findings": [
+      {
+        "severity": "P1",
+        "status": "open",
+        "finding": "u1-claude-maker.yml passes the full Maker prompt, which embeds the private Season 2 CURRENT.md, as an action input via a workflow expression, and passes the complete model output as a step-level env expression to capture-output. GitHub Actions prints uses-step with: inputs and run-step env: values (secrets masked, but these are not secrets) in the log header. Because this repository is public, private document content and unvalidated model output would appear in public logs, directly contradicting the README claim that private file contents and model output are never printed. display_report/show_full_output false does not prevent runner-level input/env echoing."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "Tool disablement depends entirely on the pinned claude-code-action honoring --tools \"\", --strict-mcp-config, and the disallowedTools list. The diff cannot prove the pinned action version enforces these flags; if the flag names or semantics differ at that SHA, the model could gain tools with the read-only github_token. A workflow-side assertion or documented manual verification of the pinned action's flag behavior is not present."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "A small TOCTOU window exists between the publish-time duplicate-marker recheck in verify_remote_state and the comment POST. The shared concurrency group serializes the two executor workflows, so exploitation requires an external Issues-write principal, and the worst outcome is a duplicate proposal comment rather than an authorization bypass, but the marker uniqueness property is checked, not enforced atomically."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "The two adjudication documents assert unverifiable repository state: 87 passing tests, local reproduction of the compare_digest failure, and specific prior model responses. None of this is provable from the supplied diff and should not be treated as evidence; only the checked-in tests and code in this diff are verifiable."
+      },
+      {
+        "severity": "P3",
+        "status": "closed",
+        "finding": "Fence-escape and marker-forgery risk in proposed_content is mitigated: hidden-markup comment delimiters, tilde fence markers (including longer runs by substring match), control characters, credential patterns, and unchanged proposals are rejected before rendering, and the tilde fence cannot be closed by backticks."
+      },
+      {
+        "severity": "P3",
+        "status": "closed",
+        "finding": "The prior non-ASCII publication defect is fixed: verify_rendered_proposal now compares UTF-8 byte sequences with a constant-time comparison, and tests exercise Korean content through render, tamper, and unchanged-proposal paths."
+      }
+    ],
+    "verification": [
+      "Paused packet defaults deny validate-ticket before any credential or model step; tests prove paused rejection and activation-window bounds.",
+      "GITHUB_TOKEN permissions stay read-only in both workflows; quality gate now also greps for issues: write; publication uses the separate Issues-write Season 2 token.",
+      "Opaque ticket resolution binds actor, title, path, run attempt, artifact identity, lease, base SHA, window, and budgets, and re-verifies live state before render and again before publish with byte-for-byte re-render equality.",
+      "Bridge reservation now rejects unapproved models inside the locked ledger section, allows one call per approved model per exact diff, and fails closed on legacy entries lacking a model field, all covered by new tests.",
+      "Inline workflow schema is test-compared with the versioned Maker output schema; the GITHUB_ENV writer's collision rejection is exercised for the Maker prompt.",
+      "The shared concurrency group is consistently applied to both workflows and its run-replacement behavior is documented as availability-only, not ticket reuse."
+    ],
+    "requirement_coverage": [
+      "Fail-closed defaults, budget enforcement, and opaque dispatch are implemented and tested.",
+      "Credential scope is not widened: no contents-write or PR-write token is introduced and forbidden effects exclude source writes and merge.",
+      "Model output is schema-validated, sanitized for mentions, markup, credentials, and size before a trusted publisher posts it.",
+      "Cross-model review bounding is enforced in the ledger, not only the CLI routing path.",
+      "Publication is bound to one fixed private Issue with digest and provenance; no PR or branch creation path exists.",
+      "Log confidentiality is claimed but not achieved for the prompt and structured output; this safeguard is not covered."
+    ],
+    "residual_risk": [
+      "Public-log exposure of private document content and model output until the input/env rendering path is reworked (open P1).",
+      "Trust in the pinned third-party action's flag semantics for tool disablement.",
+      "Repository administrators can still alter environments, variables, and run history, as already documented.",
+      "Shared concurrency replacement remains a bounded availability condition requiring re-dispatch."
+    ]
+  }
+}

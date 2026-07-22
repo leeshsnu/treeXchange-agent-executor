@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "9f98582a7f88fe049e232e0d246bea6bba2d5d3a",
+  "head_sha": "1983612f5e06896714d168774e34e55ecc1788e3",
+  "diff_sha256": "8a2ea3bc675c0a2b3a7485abb8c931e21bcf512f60fdbba9da8355345a3480ad",
+  "task_profile": "standard",
+  "requested_model": "claude-opus-4-8",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "CHANGES_REQUESTED",
+    "summary": "The Maker lane is largely fail-closed, tool-denied, and SHA/path-bound, but capture-output validates model output against CURRENT.md while emit-prompt-env/render do not re-enforce the same current-content check, and the publish path trusts a rendered file whose content is only weakly bound to the validated result. The concurrency-group rename creates a shared global group between review and maker, but review workflow still has separate jobs; a race where both run under one group is intended. Key gap: render_proposal re-validates result but does NOT pass current_content, so an unchanged-document proposal rejected at capture could still be rendered/published if the result file is swapped, and executor/source SHA drift recheck exists but publish only string-matches marker+base_sha, not proposed_content digest.",
+    "findings": [
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "render_proposal calls validate_result(result) without current_content, so the unchanged-document guard enforced in capture-output is not re-applied at render time. If maker-result.json is regenerated or altered between capture and render, an unchanged or content-drifted proposal can be rendered and published. Bind render to the captured CURRENT.md digest."
+      },
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "publish only checks body.startswith(marker) and that a 'Base SHA:' line is present; it never recomputes the proposed_content SHA-256 over the rendered fenced body to confirm it equals the digest line. A rendered comment whose fenced content diverges from its advertised digest would still post to Issue #10, weakening content provenance."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "Fence-escape defense rejects '~~~' in proposed_content but render_proposal wraps output in a '~~~markdown' fence; a proposal containing '```' triple backticks is not blocked and could break rendering context inside the fence, though impact is limited to a private Issue comment."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "validate_review_binding compares full activation objects for identity, but approved_at/expires_at equality forces review and maker packets to share a byte-identical window; SECURITY.md claims they are 'approved independently.' This is stricter than documented, not a security hole, but the doc/behavior mismatch is an unsupported claim about independent approval."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "The shared concurrency group u1-claude-opaque-ticket-global with cancel-in-progress:false serializes review and maker together. Tests assert the shared group but do not prove that a queued maker run cannot starve or be starved by a long review run; behavior under contention is asserted only structurally, not functionally."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "GITHUB_TOKEN write is denied by quality-gate grep now including issues:write; workflow permissions are actions:read/contents:read; --tools \"\" plus disallowedTools covers Read/Bash/Write/mcp; opaque ticket-only dispatch input is enforced and tested. These core safeguards are adequately covered."
+      }
+    ],
+    "verification": [
+      "Diff shows dispatch-only workflow with opaque ticket_id input and no pilot_id/head_sha/request_id inputs, asserted by StaticWorkflowTests.",
+      "quality-gate.sh extended to json-validate, py_compile, and unittest the new maker script and tests, and to grep-block issues:write and PR-target triggers.",
+      "validate_config enforces paused packet emptiness, <=7-day window, source_write_allowed=False, and fixed pilot/issue/path drift, tested in ConfigTests.",
+      "validate_result blocks secrets, HTML comment markup, ~~~ fences, control chars, mentions, oversize, and unchanged content when current_content supplied.",
+      "Ledger change adds requested_model to duplicate check, allowing one review per model while keeping legacy no-model entries fail-closed, tested in bridge tests.",
+      "resolve_dispatch_ticket and verify_remote_state re-verify run identity, artifact uniqueness, pause label presence, kill-switch absence, and no open pilot PR before publish."
+    ],
+    "requirement_coverage": [
+      "Unsafe automation bounded: no branch/PR/merge; publish targets only Issue #10; forbidden_effects enumerated and validated.",
+      "Credential exposure limited: read/Issues-only token reused, no contents/PR write introduced, secrets/log suppression via display_report/show_full_output false.",
+      "Budget bypass checks: total/per-pilot Claude operation caps enforced in reservation context and public run ledger, ticket single-use asserted.",
+      "Fail-closed: broad except returns INVALID; paused status denies all model calls; missing credentials denied.",
+      "Prompt injection: model output schema-validated and treated as untrusted; embedded inputs delimited with per-run digest."
+    ],
+    "residual_risk": [
+      "Content binding between validated result and published comment relies on string markers, not a recomputed digest of the rendered fenced body.",
+      "Render-time unchanged-document check is not re-applied, so out-of-band result mutation between capture and render is not fully fail-closed.",
+      "Independent-approval claim in docs is contradicted by byte-identical activation binding, a latent documentation/behavior drift."
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "operation",
+    "summary",
+    "proposed_content",
+    "verification",
+    "residual_risk"
+  ],
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["maker_proposal"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "proposed_content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "verification": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "residual_risk": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    }
+  }
+}
