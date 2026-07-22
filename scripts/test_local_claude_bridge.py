@@ -272,17 +272,17 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(outcomes.count("reserved"), 1)
         self.assertEqual(outcomes.count("denied"), 7)
 
-    def test_review_window_allows_six_calls_then_pauses_only_that_window(self):
+    def test_review_window_allows_twelve_calls_then_pauses_only_that_window(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Path(directory) / ".agent-state" / "ledger.json"
-            for index in range(6):
+            for index in range(12):
                 result = bridge.reserve_attempt(ledger, ledger_attempt(index))
                 self.assertEqual(result["window_calls"], index + 1)
             with self.assertRaisesRegex(bridge.BridgeError, "review window"):
-                bridge.reserve_attempt(ledger, ledger_attempt(6))
+                bridge.reserve_attempt(ledger, ledger_attempt(12))
             unrelated = bridge.reserve_attempt(
                 ledger,
-                ledger_attempt(7, work_item="PLT-D02", window="plt-d02-window-01"),
+                ledger_attempt(13, work_item="PLT-D02", window="plt-d02-window-01"),
             )
             self.assertEqual(unrelated["window_calls"], 1)
 
@@ -294,10 +294,10 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, "daily review-window"):
                 bridge.reserve_attempt(ledger, ledger_attempt(3, window="ops-03-window-03"))
 
-    def test_repository_daily_cap_is_twelve_calls(self):
+    def test_repository_daily_cap_is_twenty_four_calls(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Path(directory) / ".agent-state" / "ledger.json"
-            for index in range(12):
+            for index in range(24):
                 bridge.reserve_attempt(
                     ledger,
                     ledger_attempt(
@@ -309,7 +309,7 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, "repository daily"):
                 bridge.reserve_attempt(
                     ledger,
-                    ledger_attempt(20, work_item="TASK-20", window="task-20-window-01"),
+                    ledger_attempt(30, work_item="TASK-30", window="task-30-window-01"),
                 )
 
     def test_repository_identity_is_allowlisted(self):
