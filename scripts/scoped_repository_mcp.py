@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import u1_executor
+import local_claude_bridge as bridge
 
 
 SERVER_NAME = "treexchange_repo"
@@ -28,7 +29,6 @@ MAX_LISTED_FILES = 500
 MAX_SEARCH_MATCHES = 100
 MAX_SEARCH_BYTES = 1_000_000
 MAX_TRACKED_FILES = 20_000
-REVIEW_ARTIFACT_PATHSPEC = ":(exclude)reviews/*.json"
 
 
 class ScopeError(Exception):
@@ -170,7 +170,7 @@ class RepositoryTools:
         assert self.base_sha is not None and self.target_sha is not None
         changed_raw = self._git(
             "diff", "--name-only", "-z", self.base_sha, self.target_sha,
-            "--", ".", REVIEW_ARTIFACT_PATHSPEC,
+            "--", ".", bridge.REVIEW_ARTIFACT_PATHSPEC,
         )
         try:
             changed = [item.decode("utf-8") for item in changed_raw.split(b"\0") if item]
@@ -182,10 +182,12 @@ class RepositoryTools:
             for path in changed
         ):
             raise ScopeError("review diff escaped the signed path scope")
-        raw = self._git(
-            "diff", "--no-ext-diff", "--no-color", "--unified=3",
-            self.base_sha, self.target_sha, "--", ".", REVIEW_ARTIFACT_PATHSPEC,
-        )
+        try:
+            raw = bridge.bounded_diff(
+                self.repo, self.base_sha, self.target_sha
+            ).encode("utf-8")
+        except bridge.BridgeError as error:
+            raise ScopeError("signed review diff is unavailable") from error
         if not raw or len(raw) > self.max_diff_bytes:
             raise ScopeError("review diff is empty or exceeds the byte cap")
         try:

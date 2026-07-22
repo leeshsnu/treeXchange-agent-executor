@@ -157,7 +157,8 @@ admits only the pinned local `scoped_repository_mcp.py` server; no third-party o
 network MCP server is loaded. The read-only Reviewer receives one exact
 Base-to-Head diff operation plus three scoped repository-read operations. The
 diff is returned as untrusted tool evidence instead of being embedded in the
-authority-bearing prompt. Full-file reads under workflow, config, operations
+authority-bearing prompt. The bridge and MCP tool share one canonical diff
+generator, and tests bind its content, digest and byte count. Full-file reads under workflow, config, operations
 and governance control paths are denied; a Reviewer can see changes there only
 as exact signed diff hunks. The Maker adds two write operations that accept only
 signed exact low-risk files in an already-created clean `claude/` worktree. The server

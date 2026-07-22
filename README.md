@@ -129,8 +129,9 @@ review bridge. It defines two explicit execution profiles:
 - `repository_reviewer` receives only the trusted local `read_diff`,
   `read_file`, `list_files`, and `search_text` tools. The raw diff is never
   embedded in the authority-bearing prompt: `read_diff` derives it from the
-  signed exact Base and Head, rechecks the signed changed-path scope and returns
-  it as untrusted tool evidence with a trusted digest. Claude's built-in file
+  signed exact Base and Head through the same canonical bounded-diff generator
+  used to compute the prompt digest and byte count, rechecks the signed
+  changed-path scope and returns it as untrusted tool evidence. Claude's built-in file
   tools are disabled. Full-file context under workflow, config, operations and
   governance control paths remains unavailable; only exact signed diff hunks
   may include changes there. The local tool server enforces signed

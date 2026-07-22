@@ -931,6 +931,30 @@ def verify(args: argparse.Namespace) -> None:
     )
 
 
+def build_worker_attempt(
+    request: dict[str, Any],
+    model: str,
+    input_digest: str,
+    called_at: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "attempt_id": request["request_id"],
+        "called_at": called_at or dt.datetime.now(dt.timezone.utc).isoformat(),
+        "repository": request["repository"],
+        "base_sha": request["base_sha"],
+        "head_sha": request["target_sha"],
+        "diff_sha256": input_digest,
+        "requested_model": model,
+        "operation": request["role"],
+        "request_nonce": request["nonce"],
+        "request_digest": request_digest(request),
+        "budget_reservation_id": request["budget_reservation_id"],
+        "work_item_id": request["work_item_id"],
+        "review_window": request["window_id"],
+        "status": "started",
+    }
+
+
 def run(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     require_activation(config)
@@ -958,22 +982,7 @@ def run(args: argparse.Namespace) -> None:
         input_digest = request_digest(request)
     bridge.require_local_claude_runtime()
     attempt_id = request["request_id"]
-    attempt = {
-        "attempt_id": attempt_id,
-        "called_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "repository": request["repository"],
-        "base_sha": request["base_sha"],
-        "head_sha": request["target_sha"],
-        "diff_sha256": input_digest,
-        "requested_model": model,
-        "operation": request["role"],
-        "request_nonce": request["nonce"],
-        "request_digest": request_digest(request),
-        "budget_reservation_id": request["budget_reservation_id"],
-        "work_item_id": request["work_item_id"],
-        "review_window": request["window_id"],
-        "status": "started",
-    }
+    attempt = build_worker_attempt(request, model, input_digest)
     reservation = bridge.reserve_attempt(ledger_path, attempt, legacy_ledgers)
     try:
         wrapper, result = invoke_claude(repo, request, config, prompt, schema, model)

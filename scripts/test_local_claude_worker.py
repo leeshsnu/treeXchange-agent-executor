@@ -272,6 +272,35 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         prompt = worker.reviewer_prompt(validated, "a" * 64, 123)
         self.assertIn("None; exact diff only", prompt)
 
+    def test_run_attempt_wiring_enforces_nonce_and_budget_replay_fields(self):
+        first_request = worker.validate_request(work_request(), self.config, NOW)
+        second_request = work_request()
+        second_request["request_id"] = "u2-request-0002"
+        second_request["nonce"] = "2" * 32
+        second_request = sign_request(second_request)
+        second_request = worker.validate_request(second_request, self.config, NOW)
+        first = worker.build_worker_attempt(
+            first_request,
+            worker.bridge.DEFAULT_MODEL,
+            "a" * 64,
+            "2026-07-22T00:00:00+00:00",
+        )
+        second = worker.build_worker_attempt(
+            second_request,
+            worker.bridge.DEFAULT_MODEL,
+            "b" * 64,
+            "2026-07-22T00:01:00+00:00",
+        )
+        self.assertEqual(first["request_nonce"], first_request["nonce"])
+        self.assertEqual(
+            first["budget_reservation_id"], first_request["budget_reservation_id"]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "ledger.json"
+            worker.bridge.reserve_attempt(ledger, first)
+            with self.assertRaisesRegex(worker.bridge.BridgeError, "budget reservation"):
+                worker.bridge.reserve_attempt(ledger, second)
+
     def test_reviewer_tools_are_repository_read_only(self):
         request = worker.validate_request(
             work_request("repository_reviewer"), self.config, NOW

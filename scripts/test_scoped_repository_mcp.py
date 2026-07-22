@@ -109,8 +109,10 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
 
     def test_reviewer_reads_exact_signed_diff_only_through_review_tool(self):
         evidence = self.reviewer().call("read_diff", {})
+        canonical = mcp.bridge.bounded_diff(self.repo, self.base, self.head)
         self.assertEqual(evidence["base_sha"], self.base)
         self.assertEqual(evidence["target_sha"], self.head)
+        self.assertEqual(evidence["content"], canonical)
         self.assertIn("+reviewed", evidence["content"])
         self.assertIn('"mode":"reviewed"', evidence["content"])
         self.assertRegex(evidence["sha256"], r"^[0-9a-f]{64}$")
