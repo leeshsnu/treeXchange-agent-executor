@@ -209,9 +209,13 @@ while U2 is paused, but it cannot execute. The controller:
   approval private key whose public-key digest is pinned in the active packet;
 - limits the first release to the read-only Reviewer and exactly one model
   operation;
+- atomically claims the signed release once in an owner-only external receipt
+  under shared Git state before queue state advances, so rewinding the mutable
+  queue alone cannot replay an attended release;
 - creates an owner-only, single-use signed worker request, invokes the same
-  bounded U2 worker, and independently binds the returned result to the request,
-  repository and target Head;
+  bounded U2 worker with the explicit repository-wide shared ledger, and
+  independently binds the returned result to the request, repository and target
+  Head;
 - moves the item to `completed`, `changes_requested`, or fail-closed `failed`,
   and appends a sanitized machine event so a local dashboard can consume state
   without receiving prompt, diff, credential or full model-output content.
@@ -220,9 +224,9 @@ The first controller does not create a branch, edit source, commit, push, open a
 PR, merge, deploy, clear pause, retry automatically, or activate the worker. A
 later launcher may call `run-next` only after the exact controller code, paused
 queue digest, time-bounded Reviewer activation and local secrets receive their
-separate approvals. Reviewer requests may target a signed non-protected
-`agent/`, `codex/`, `claude/` or other safe feature branch; the Maker remains
-restricted to `claude/` branches.
+separate approvals. Reviewer requests may target only signed `agent/`, `codex/`
+or `claude/` feature branches; the Maker remains restricted to `claude/`
+branches.
 
 The controller HMAC key and attended Ed25519 approval key have different jobs.
 The scheduled controller receives the HMAC key so it can authorize one-use
@@ -231,6 +235,13 @@ released queue. The approval private key is supplied only to the attended
 `release` command and is never required by `run-next` or passed to Claude. Thus
 an unattended scheduler cannot manufacture the user-release signature with its
 normal runtime credentials.
+
+The private approval key is read through a no-follow owner-only descriptor and
+passed to OpenSSL through inherited anonymous file descriptors; no named copy is
+written to the shared temporary directory. The worker reserves the signed
+request id, nonce and budget-reservation id in the repository-wide ledger before
+Claude starts, even though the controller CLI does not accept a caller-selected
+ledger.
 
 ## OMC collaboration lane
 

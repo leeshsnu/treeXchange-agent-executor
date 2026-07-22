@@ -67,7 +67,7 @@ REQUEST_FIELDS = {
 REQUEST_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{7,95}$")
 NONCE_RE = re.compile(r"^[a-f0-9]{32,64}$")
 SIGNATURE_RE = re.compile(r"^[a-f0-9]{64}$")
-REVIEW_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{1,120}$")
+REVIEW_BRANCH_RE = re.compile(r"^(?:agent|claude|codex)/[A-Za-z0-9._/-]{1,120}$")
 MAKER_BRANCH_RE = re.compile(r"^claude/[A-Za-z0-9._/-]{1,120}$")
 CONTROL_EVIDENCE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{7,95}$")
 SENSITIVE_READ_PATHS = (
@@ -266,7 +266,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
         fail("U2 protected Maker path contract is invalid", INVALID)
     if value.get("git") != {
         "required_maker_branch_prefix": "claude/",
-        "forbidden_reviewer_branches": ["main", "master"],
+        "allowed_reviewer_branch_prefixes": ["agent/", "claude/", "codex/"],
         "require_clean_start": True,
         "forbid_commit_during_model_run": True,
         "forbid_push": True,
@@ -466,8 +466,11 @@ def validate_request(
         or branch.endswith("/")
     ):
         fail("request branch is invalid", INVALID)
-    if role == "repository_reviewer" and branch in config["git"]["forbidden_reviewer_branches"]:
-        fail("repository reviewer cannot target a protected base branch", INVALID)
+    if role == "repository_reviewer" and not any(
+        branch.startswith(prefix)
+        for prefix in config["git"]["allowed_reviewer_branch_prefixes"]
+    ):
+        fail("repository reviewer must target an approved feature-branch family", INVALID)
     for name in ("base_sha", "target_sha"):
         if not u1_executor.SHA_RE.fullmatch(request.get(name, "")):
             fail(f"{name} must be an exact commit SHA", INVALID)
@@ -1024,6 +1027,7 @@ def working_tree_evidence(repo: Path, config: dict[str, Any]) -> tuple[list[str]
                 or final_metadata.st_dev != metadata.st_dev
                 or final_metadata.st_ino != metadata.st_ino
                 or final_metadata.st_nlink != 1
+                or final_metadata.st_size != metadata.st_size
             ):
                 fail("Claude Maker untracked output changed during inspection")
         except OSError:
@@ -1034,6 +1038,8 @@ def working_tree_evidence(repo: Path, config: dict[str, Any]) -> tuple[list[str]
                     os.close(descriptor)
                 except OSError:
                     pass
+        if len(data) > config["limits"]["maximum_diff_bytes"]:
+            fail("Claude Maker change exceeds the U2 diff byte cap")
         if b"\x00" in data:
             fail("initial U2 Maker accepts only UTF-8 text changes")
         payload.extend(f"\nUNTRACKED:{relative}\n".encode("utf-8"))

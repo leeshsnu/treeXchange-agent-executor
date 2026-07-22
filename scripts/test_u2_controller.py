@@ -191,6 +191,7 @@ class U2ControllerTests(unittest.TestCase):
             result = json.loads(output.call_args.args[0])
             self.assertEqual(result["status"], "draft_paused")
             self.assertEqual(result["operations_reserved"], 0)
+            self.assertFalse(result["external_release_claimed"])
 
             invalid = paused_queue(repository)
             invalid["events"].append(
@@ -276,6 +277,30 @@ class U2ControllerTests(unittest.TestCase):
                     queue, repository.approval_public.read_bytes()
                 )
 
+    def test_release_claim_is_external_atomic_and_single_use(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ReviewRepository(directory)
+            queue = released_queue(repository)
+            config = active_config(repository)
+            now = dt.datetime.now(dt.timezone.utc)
+            request = controller.build_request(
+                queue, queue["items"][0], config, KEY, now
+            )
+            claim = controller.claim_release_once(
+                repository.root, queue, request, now
+            )
+            self.assertTrue(claim.is_file())
+            self.assertNotEqual(claim.parent, repository.state)
+            path = repository.queue_path(queue)
+            args = argparse.Namespace(repo=repository.root, queue=path)
+            with mock.patch("builtins.print") as output:
+                controller.inspect_queue(args)
+            self.assertTrue(
+                json.loads(output.call_args.args[0])["external_release_claimed"]
+            )
+            with self.assertRaisesRegex(controller.ControllerError, "already been consumed"):
+                controller.claim_release_once(repository.root, queue, request, now)
+
     def test_attended_release_requires_the_exact_user_approved_digest(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = ReviewRepository(directory)
@@ -339,6 +364,10 @@ class U2ControllerTests(unittest.TestCase):
                 args = argparse.Namespace(repo=repository.root, queue=path, config=config_path)
 
                 def fake_worker_run(worker_args: argparse.Namespace) -> None:
+                    self.assertEqual(
+                        worker_args.ledger,
+                        controller.bridge.shared_ledger_path(repository.root),
+                    )
                     request = controller.worker.load_json(worker_args.request, "request")
                     controller.worker.verify_controller_signature(
                         request,
@@ -397,6 +426,83 @@ class U2ControllerTests(unittest.TestCase):
             )
             rendered = json.dumps(queue)
             self.assertNotIn(KEY, rendered)
+
+    def test_controller_happy_path_exercises_real_worker_budget_and_nonce_admission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ReviewRepository(directory)
+            path = repository.queue_path(released_queue(repository))
+            config = active_config(repository)
+            with tempfile.TemporaryDirectory() as config_directory:
+                config_path = Path(config_directory) / "active.json"
+                config_path.write_text(json.dumps(config), encoding="utf-8")
+                args = argparse.Namespace(repo=repository.root, queue=path, config=config_path)
+
+                def fake_invoke(
+                    repo: Path,
+                    request: dict,
+                    worker_config: dict,
+                    prompt: str,
+                    schema: dict,
+                    model: str,
+                    review_receipt: Path | None = None,
+                ) -> tuple[dict, dict]:
+                    self.assertIsNotNone(review_receipt)
+                    diff = controller.bridge.bounded_diff(
+                        repo, request["base_sha"], request["target_sha"]
+                    )
+                    controller.bridge.save_private_json(
+                        review_receipt,
+                        {
+                            "schema_version": 1,
+                            "base_sha": request["base_sha"],
+                            "target_sha": request["target_sha"],
+                            "sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
+                            "bytes": len(diff.encode("utf-8")),
+                        },
+                    )
+                    return (
+                        {"session_id": "test-session", "num_turns": 1},
+                        {
+                            "verdict": "APPROVE",
+                            "summary": "No blocking finding remains.",
+                            "findings": [],
+                            "verification": ["Reviewed the exact diff."],
+                            "requirement_coverage": ["Bounded Reviewer flow."],
+                            "residual_risk": ["Model call replaced by test double."],
+                        },
+                    )
+
+                environment = {
+                    config["controller"]["key_environment"]: KEY,
+                    config["approver"]["public_key_path_environment"]: str(
+                        repository.approval_public
+                    ),
+                    "U2_EXECUTOR_TRUSTED_SHA": git(controller.ROOT, "rev-parse", "HEAD"),
+                }
+                stdout = io.StringIO()
+                with mock.patch.object(controller.worker, "CONFIG_PATH", config_path):
+                    with mock.patch.object(
+                        controller.worker.bridge, "require_local_claude_runtime"
+                    ):
+                        with mock.patch.object(
+                            controller.worker, "invoke_claude", side_effect=fake_invoke
+                        ):
+                            with mock.patch.dict(
+                                controller.os.environ, environment, clear=False
+                            ):
+                                with contextlib.redirect_stdout(stdout):
+                                    controller.run_next(args)
+
+            result = json.loads(stdout.getvalue())
+            self.assertEqual(result["status"], "WORK_COMPLETED")
+            ledger = controller.bridge.load_effective_ledger(
+                controller.bridge.shared_ledger_path(repository.root), ()
+            )
+            self.assertEqual(len(ledger["calls"]), 1)
+            call = ledger["calls"][0]
+            self.assertEqual(call["status"], "succeeded")
+            self.assertTrue(call["request_nonce"])
+            self.assertTrue(call["budget_reservation_id"])
 
 
 if __name__ == "__main__":

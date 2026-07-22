@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "f8d807b936fd226dd18616e78505d8df486f2dcd",
+  "head_sha": "89c0a36632e0977098ea97f4e7383a080a04d889",
+  "diff_sha256": "d125bd8ddf47f19114674326e9349bfa4b6a40ad3b3f25adfbcad4303adee5ee",
+  "task_profile": "advanced",
+  "requested_model": "claude-fable-5",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "CHANGES_REQUESTED",
+    "summary": "The controller is well-structured with real key separation, digest-bound attended release, and fail-closed failure handling, but two P2 gaps remain. The one-operation cap and attempt counters live only in unsigned mutable queue state, so the same runtime the design distrusts can rewind them and reuse an approved release. The controller also passes a null ledger to the worker and mints its own budget reservation identifier, so the documented repository-wide model-call budget and single-use nonce enforcement are not demonstrated by this diff. Several P3 hardening gaps also remain.",
+    "findings": [
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "The single-operation cap is enforced only by counting model_reserved entries in the events array, and events plus attempts are deliberately excluded from both the approval digest and the Ed25519 release payload. An unattended scheduler holding the HMAC key and owner write access to the queue file can delete the reserved event, reset the item to a pre-run state, and pass validate_queue and verify_release_signature again, replaying additional model operations under one attended release until the window expires. The exactly-one-operation and no-automatic-retry guarantees are therefore advisory against the very runtime the two-key design distrusts."
+      },
+      {
+        "severity": "P2",
+        "status": "open",
+        "finding": "run_next in scripts/u2_controller.py constructs worker arguments with ledger set to None, and build_request mints budget_reservation_id from a random UUID with no reservation against any budget ledger. Nothing in the diff shows how the worker behaves with a missing ledger, so the SECURITY.md claims that an active run requires the repository-wide model-call budget and a fresh single-use nonce are unverified for the controller path; if the worker tolerates a null ledger, budget accounting and nonce replay tracking may be silently skipped."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "The reviewer branch guard is an exact match against the lowercase list main and master while the loosened pattern admits mixed case and multi-segment names. Variants such as Main on a case-insensitive filesystem, or names like release branches and refs-style paths, bypass the protected-base check. Impact is limited because the reviewer role is read-only, but the guard does not match its stated intent."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "ed25519_signature copies the attended approval private key bytes into a file under the default system temporary directory before invoking openssl. Mode 0600 and directory cleanup mitigate, but this widens exposure of the highest-value key to the shared temp filesystem, swap, and backup surfaces; signing via stdin or a directory under the owner-only state path would be tighter."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "In working_tree_evidence the final lstat after reading an untracked file compares device, inode, and link count but omits size, and the bounded read loop can retain one byte more than maximum_diff_bytes. A file that grows during the read can slip a marginal overage into the hashed payload; the pre-read size gate makes this low impact but the recheck is incomplete."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "The end-to-end approval test in test_u2_controller.py replaces worker.run with a fake that fabricates the output file, so the happy-path test proves controller bookkeeping and signature binding but never exercises real worker request admission, nonce single-use, activation, or budget behavior. The signed-request test only checks verify_controller_signature, not full validate_request execution inside a live worker run."
+      }
+    ],
+    "verification": [
+      "Diff shows load_config now requires an approver block, forbids a key pin while paused, and requires a 64-hex pin when active, with tests covering both the missing-pin rejection and the readiness blocker for a mismatched public key.",
+      "Diff shows require_trusted_config_path rejects untracked config files before any load, with a test asserting load_config is never called, and worker.run re-loads and compares config after the model call to detect drift.",
+      "Diff shows the attended release path verifies the user-supplied digest against the current paused queue under a lock, signs release metadata with the separate Ed25519 key, and immediately verifies against the pinned public key before saving.",
+      "Diff shows verify_release_signature detects tampering of immutable item fields after release, and validate_queue rejects Maker roles, multi-operation releases, dependency cycles, and execution evidence in paused queues, each with a test.",
+      "Diff shows the child environment now excludes both the controller key variable and the approval public-key path variable, and the approval private key is consumed only by the attended release command.",
+      "Diff shows worker failure paths record a sanitized detail code derived from failure class or exception type, and queue events carry only identifiers, states, and codes rather than prompts, diffs, or model output."
+    ],
+    "requirement_coverage": [
+      "Two-key separation between the controller HMAC request signer and the attended Ed25519 release approver, with only the pinned public key available to unattended runs.",
+      "Reviewer-only, digest-bound attended release with a bounded window and single-use signed worker requests derived from it.",
+      "Fail-closed handling that leaves crashed or malformed runs in a running or failed state without automatic retry, source write, or integration.",
+      "Sanitized machine event ledger suitable for a dashboard without credential, prompt, or diff content.",
+      "Reviewer branch loosening paired with an explicit protected-base denial and retention of the Maker branch-prefix restriction, though the denial list is incomplete."
+    ],
+    "residual_risk": [
+      "Replay of an approved release by mutating unsigned queue state remains possible for a compromised or misbehaving unattended runtime until the cap is bound into signed or externally anchored state.",
+      "Budget and nonce enforcement on the controller path depends on unshown worker behavior with a null ledger and controller-minted reservation identifiers.",
+      "The repository owner-administrator can still alter config, keys, and queue files locally; local key hygiene remains the trust root."
+    ]
+  }
+}

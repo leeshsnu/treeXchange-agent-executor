@@ -65,7 +65,7 @@
   ],
   "git": {
     "required_maker_branch_prefix": "claude/",
-    "forbidden_reviewer_branches": ["main", "master"],
+    "allowed_reviewer_branch_prefixes": ["agent/", "claude/", "codex/"],
     "require_clean_start": true,
     "forbid_commit_during_model_run": true,
     "forbid_push": true,

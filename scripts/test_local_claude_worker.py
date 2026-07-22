@@ -251,7 +251,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
                 with self.assertRaisesRegex(worker.WorkerError, "branch is invalid"):
                     worker.validate_request(request, self.config, NOW)
 
-    def test_reviewer_accepts_cross_family_branch_but_not_protected_base(self):
+    def test_reviewer_accepts_only_approved_feature_branch_families(self):
         request = work_request("repository_reviewer")
         request["branch"] = "agent/u2-controller"
         request = sign_request(request)
@@ -260,7 +260,11 @@ class LocalClaudeWorkerTests(unittest.TestCase):
 
         request["branch"] = "main"
         request = sign_request(request)
-        with self.assertRaisesRegex(worker.WorkerError, "protected base"):
+        with self.assertRaisesRegex(worker.WorkerError, "branch is invalid"):
+            worker.validate_request(request, self.config, NOW)
+        request["branch"] = "release/production"
+        request = sign_request(request)
+        with self.assertRaisesRegex(worker.WorkerError, "branch is invalid"):
             worker.validate_request(request, self.config, NOW)
 
     def test_maker_rejects_protected_or_traversing_write_scope(self):

@@ -209,6 +209,11 @@ acceptance criteria, dependency, model profile, exact commit, branch or path
 scope invalidates the release before a worker request is signed. Mutable state,
 attempt counters, sanitized results and events are excluded from the manifest
 digest so the state machine can advance without expanding authority.
+Before writing that mutable state, `run-next` uses an atomic create-exclusive
+operation to write a release-consumption receipt outside the queue in the
+repository's owner-only shared Git state. There is no controller path that
+deletes or rewinds this receipt, so resetting the queue cannot by itself reuse
+the attended release.
 
 The attended queue release and automated worker request use separate keys. The
 release is Ed25519-signed by an owner-only private key used only by the attended
@@ -217,6 +222,13 @@ public key. `run-next` receives only that public key, so it can verify the exact
 approved manifest but cannot mint a release. The controller HMAC key remains
 capable only of signing the single-use request derived from an already valid
 release.
+
+The controller passes the exact repository-wide shared ledger path to the
+worker. The worker atomically reserves the signed request id, nonce and budget
+reservation id there and applies the repository, work-item window and daily
+model-call caps before invoking Claude. A null caller-selected ledger is not a
+budget bypass; it resolves to the same shared path, but the controller names the
+path explicitly to make this contract auditable.
 
 The controller key is injected only into the deterministic controller and is
 removed from the Claude child environment by the worker. The approval private
@@ -227,6 +239,12 @@ role, current signed queue release, remaining one-operation release budget,
 fresh single-use nonce and the repository-wide model-call budget. A crash or
 malformed result leaves work `running` or `failed`; it never authorizes an
 automatic retry, source write or integration.
+
+These local controls do not claim to contain an arbitrary malicious process
+already running as the repository owner. Such a process could delete local
+state or invoke the user's Claude CLI directly. They instead make the pinned
+deterministic controller fail closed under crashes, queue rewinds and malformed
+state without possessing the attended approval private key.
 
 ## Residual administrative risk
 

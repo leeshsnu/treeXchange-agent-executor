@@ -399,7 +399,9 @@ def release_payload(queue: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def run_openssl(arguments: list[str]) -> subprocess.CompletedProcess[bytes]:
+def run_openssl(
+    arguments: list[str], *, pass_fds: tuple[int, ...] = ()
+) -> subprocess.CompletedProcess[bytes]:
     executable = shutil.which("openssl")
     if executable is None:
         fail("OpenSSL is unavailable for attended U2 release verification")
@@ -409,6 +411,7 @@ def run_openssl(arguments: list[str]) -> subprocess.CompletedProcess[bytes]:
             capture_output=True,
             check=False,
             env={"PATH": os.defpath, "LANG": "C"},
+            pass_fds=pass_fds,
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
@@ -464,23 +467,26 @@ def secure_private_key_bytes(path: Path) -> bytes:
 
 def ed25519_signature(payload: bytes, private_key: Path) -> bytes:
     private_key_bytes = secure_private_key_bytes(private_key)
-    with tempfile.TemporaryDirectory(prefix="u2-release-sign-") as directory:
-        message = Path(directory) / "release.payload"
-        isolated_key = Path(directory) / "approval-private.pem"
-        message.write_bytes(payload)
-        isolated_key.write_bytes(private_key_bytes)
-        os.chmod(message, 0o600)
-        os.chmod(isolated_key, 0o600)
+    with tempfile.TemporaryFile() as message, tempfile.TemporaryFile() as isolated_key:
+        message.write(payload)
+        message.flush()
+        message.seek(0)
+        isolated_key.write(private_key_bytes)
+        isolated_key.flush()
+        isolated_key.seek(0)
+        message_descriptor = message.fileno()
+        key_descriptor = isolated_key.fileno()
         completed = run_openssl(
             [
                 "pkeyutl",
                 "-sign",
                 "-inkey",
-                str(isolated_key),
+                f"/dev/fd/{key_descriptor}",
                 "-rawin",
                 "-in",
-                str(message),
-            ]
+                f"/dev/fd/{message_descriptor}",
+            ],
+            pass_fds=(key_descriptor, message_descriptor),
         )
     if completed.returncode != 0 or len(completed.stdout) != 64:
         fail("U2 attended release could not be signed by the approved key")
@@ -529,6 +535,77 @@ def verify_release_signature(queue: dict[str, Any], public_key: bytes) -> None:
     if len(signature) != 64:
         fail("U2 queue attended release signature is malformed")
     ed25519_verify(release_payload(queue), signature, public_key)
+
+
+def release_claim_path(
+    repo: Path, queue: dict[str, Any], *, prepare: bool = False
+) -> Path:
+    state_root = bridge.shared_ledger_path(repo).parent
+    claims = state_root / "u2-release-claims"
+    if prepare or claims.exists() or claims.is_symlink():
+        try:
+            if prepare:
+                state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+                claims.mkdir(mode=0o700, exist_ok=True)
+            metadata = claims.lstat()
+        except OSError:
+            fail("U2 external release-claim directory is unavailable")
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            fail("U2 external release-claim directory must remain owner-only")
+    identity = hashlib.sha256(
+        release_payload(queue) + queue["release"]["release_signature"].encode("ascii")
+    ).hexdigest()
+    return claims / f"{identity}.json"
+
+
+def claim_release_once(
+    repo: Path,
+    queue: dict[str, Any],
+    request: dict[str, Any],
+    now: dt.datetime,
+) -> Path:
+    path = release_claim_path(repo, queue, prepare=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        receipt = json.dumps(
+            {
+                "schema_version": 1,
+                "repository": queue["repository"],
+                "queue_id": queue["queue_id"],
+                "release_id": queue["release"]["release_id"],
+                "queue_digest": queue["release"]["queue_digest"],
+                "request_id": request["request_id"],
+                "work_item_id": request["work_item_id"],
+                "claimed_at": now.isoformat().replace("+00:00", "Z"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        written = 0
+        while written < len(receipt):
+            written += os.write(descriptor, receipt[written:])
+        os.fsync(descriptor)
+    except FileExistsError:
+        fail("U2 attended release has already been consumed")
+    except OSError:
+        fail("U2 external release claim could not be recorded")
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    return path
 
 
 def select_next(queue: dict[str, Any]) -> dict[str, Any]:
@@ -693,6 +770,7 @@ def run_next(args: argparse.Namespace) -> None:
         release_is_current(queue, current)
         item = select_next(queue)
         request = build_request(queue, item, config, key, current)
+        claim_release_once(repo, queue, request, current)
         request_dir = repo / ".agent-state/u2-requests"
         request_path = request_dir / f"{request['request_id']}.json"
         request_path = worker.private_agent_path(repo, request_path, "U2 work request", must_exist=False)
@@ -713,7 +791,7 @@ def run_next(args: argparse.Namespace) -> None:
         repo=repo,
         request=request_path,
         output=output_path,
-        ledger=None,
+        ledger=bridge.shared_ledger_path(repo),
         config=args.config,
     )
     try:
@@ -783,7 +861,8 @@ def run_next(args: argparse.Namespace) -> None:
 
 
 def inspect_queue(args: argparse.Namespace) -> None:
-    _, queue = load_queue(args.repo.resolve(), args.queue)
+    repo = args.repo.resolve()
+    _, queue = load_queue(repo, args.queue)
     counts = {state: 0 for state in sorted(ITEM_STATES)}
     for item in queue["items"]:
         counts[item["state"]] += 1
@@ -799,6 +878,10 @@ def inspect_queue(args: argparse.Namespace) -> None:
                 ),
                 "maximum_operations": queue["release"]["maximum_operations"],
                 "approval_digest": approval_digest(queue),
+                "external_release_claimed": (
+                    queue["status"] == "released"
+                    and release_claim_path(repo, queue).exists()
+                ),
             },
             separators=(",", ":"),
         )
