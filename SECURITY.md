@@ -147,9 +147,13 @@ removes it, GitHub tokens, proxy variables, extra CA bundles and unrelated
 environment values before starting Claude. A request signature never authorizes
 activation: the protected U2 config
 must separately be `approved_active`, and the current checked-in state is
-`proposed_paused` with `activation.enabled=false`. An active worker must also
-match its running commit to the user's external `U2_EXECUTOR_TRUSTED_SHA`; every
-signed request binds distinct pause-release and budget-reservation evidence.
+`proposed_paused` with `activation.enabled=false`, an empty enabled-role list,
+and no approval window. A future active packet must name a canonical
+reviewer-first role set, approval identity, and positive window of at most seven
+days. Enabling the Reviewer alone cannot authorize Maker edits. An active worker
+must also match its running commit to the user's external
+`U2_EXECUTOR_TRUSTED_SHA`; every signed request binds distinct pause-release and
+budget-reservation evidence.
 
 Tool permission is role-specific and deny-first. All Claude built-in file,
 shell, web, GitHub, plugin and subagent tools are disabled. `--strict-mcp-config`

@@ -180,11 +180,14 @@ sensitive-file, untracked-file, symlink, hard-link, read-only-role and exact-wri
 checked-in worker nevertheless remains paused pending a separately reviewed
 activation change.
 
-The checked-in U2 config is `proposed_paused`. `verify-request` may prove that a
+The checked-in U2 config is `proposed_paused`, has no enabled roles, and carries
+no approval identity or activation window. `verify-request` may prove that a
 signed request and clean worktree are coherent, but `run` denies before a model
-call until a separately reviewed exact executor SHA is installed in
+call until a separately reviewed packet enables a canonical reviewer-first role
+set for at most seven days, an exact executor SHA is installed in
 `U2_EXECUTOR_TRUSTED_SHA` and matches the running commit, and the controller key,
-pause release, budget and activation packet are approved. The worker never
+pause release, budget and activation packet are approved. Enabling the read-only
+Reviewer does not implicitly enable the scoped Maker. The worker never
 commits, pushes, opens a PR, merges, deploys or clears a pause. Those remain
 deterministic controller responsibilities after machine-derived postconditions
 pass.

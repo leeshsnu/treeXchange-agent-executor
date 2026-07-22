@@ -3,6 +3,10 @@
   "status": "proposed_paused",
   "activation": {
     "enabled": false,
+    "enabled_roles": [],
+    "approved_by": null,
+    "approved_at": null,
+    "expires_at": null,
     "trusted_sha_environment": "U2_EXECUTOR_TRUSTED_SHA",
     "requires_controller_signature": true,
     "requires_control_release_id": true,
