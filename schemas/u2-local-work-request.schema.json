@@ -40,7 +40,7 @@
         "leeshsnu/treeXchange-season2"
       ]
     },
-    "branch": {"type": "string", "pattern": "^claude/[A-Za-z0-9._/-]{1,120}$"},
+    "branch": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{1,120}$"},
     "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "target_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "risk_class": {"const": "low"},

@@ -50,6 +50,7 @@ def active_config(config: dict, enabled_roles: list[str] | None = None) -> dict:
             "expires_at": (now + dt.timedelta(hours=1)).isoformat(),
         }
     )
+    value["approver"]["public_key_sha256"] = "a" * 64
     return value
 
 
@@ -249,6 +250,18 @@ class LocalClaudeWorkerTests(unittest.TestCase):
                 request = sign_request(request)
                 with self.assertRaisesRegex(worker.WorkerError, "branch is invalid"):
                     worker.validate_request(request, self.config, NOW)
+
+    def test_reviewer_accepts_cross_family_branch_but_not_protected_base(self):
+        request = work_request("repository_reviewer")
+        request["branch"] = "agent/u2-controller"
+        request = sign_request(request)
+        validated = worker.validate_request(request, self.config, NOW)
+        self.assertEqual(validated["branch"], "agent/u2-controller")
+
+        request["branch"] = "main"
+        request = sign_request(request)
+        with self.assertRaisesRegex(worker.WorkerError, "protected base"):
+            worker.validate_request(request, self.config, NOW)
 
     def test_maker_rejects_protected_or_traversing_write_scope(self):
         for path in ("docs/governance/STATUS.md", "../outside.md", "services//model"):
@@ -722,6 +735,31 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(worker.WorkerError, "proposed and paused"):
             worker.run(args)
+
+    def test_run_rejects_an_untracked_activation_config_before_loading_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            alternate = Path(directory) / "active.json"
+            alternate.write_text("{}", encoding="utf-8")
+            args = argparse.Namespace(
+                repo=Path("/not/read"),
+                request=Path("/not/read/request.json"),
+                output=Path("/not/read/output.json"),
+                ledger=Path("/not/read/ledger.json"),
+                config=alternate,
+            )
+            with mock.patch.object(worker, "load_config") as load:
+                with self.assertRaisesRegex(worker.WorkerError, "exact checked-in"):
+                    worker.run(args)
+            load.assert_not_called()
+
+    def test_active_config_requires_an_attended_approver_public_key_pin(self):
+        active = active_config(self.config)
+        active["approver"]["public_key_sha256"] = None
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "active.json"
+            path.write_text(json.dumps(active), encoding="utf-8")
+            with self.assertRaisesRegex(worker.WorkerError, "approver public-key pin"):
+                worker.load_config(path)
 
     def test_run_denies_active_config_when_running_sha_is_not_user_trusted(self):
         active = active_config(self.config)

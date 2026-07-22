@@ -186,11 +186,51 @@ signed request and clean worktree are coherent, but `run` denies before a model
 call until a separately reviewed packet enables a canonical reviewer-first role
 set for at most seven days, an exact executor SHA is installed in
 `U2_EXECUTOR_TRUSTED_SHA` and matches the running commit, and the controller key,
-pause release, budget and activation packet are approved. Enabling the read-only
-Reviewer does not implicitly enable the scoped Maker. The worker never
+the pinned attended-approval public key, pause release, budget and activation
+packet are approved. Enabling the read-only Reviewer does not implicitly enable
+the scoped Maker. The worker never
 commits, pushes, opens a PR, merges, deploys or clears a pause. Those remain
 deterministic controller responsibilities after machine-derived postconditions
 pass.
+
+### Deterministic U2 Reviewer controller
+
+`scripts/u2_controller.py` supplies the missing first-stage manager for the
+read-only Reviewer lane. Its queue remains owner-only and ignored under the
+assigned repository's `.agent-state` directory. A draft queue may be inspected
+while U2 is paused, but it cannot execute. The controller:
+
+- validates one bounded dependency graph and selects only a dependency-ready
+  Reviewer item;
+- hashes the immutable work manifest, including objective, acceptance criteria,
+  role, exact Base and Head, branch, path scopes, model profile and dependencies;
+- requires an attended `release` command to present the exact user-approved
+  manifest digest, then signs the release metadata with a separate Ed25519
+  approval private key whose public-key digest is pinned in the active packet;
+- limits the first release to the read-only Reviewer and exactly one model
+  operation;
+- creates an owner-only, single-use signed worker request, invokes the same
+  bounded U2 worker, and independently binds the returned result to the request,
+  repository and target Head;
+- moves the item to `completed`, `changes_requested`, or fail-closed `failed`,
+  and appends a sanitized machine event so a local dashboard can consume state
+  without receiving prompt, diff, credential or full model-output content.
+
+The first controller does not create a branch, edit source, commit, push, open a
+PR, merge, deploy, clear pause, retry automatically, or activate the worker. A
+later launcher may call `run-next` only after the exact controller code, paused
+queue digest, time-bounded Reviewer activation and local secrets receive their
+separate approvals. Reviewer requests may target a signed non-protected
+`agent/`, `codex/`, `claude/` or other safe feature branch; the Maker remains
+restricted to `claude/` branches.
+
+The controller HMAC key and attended Ed25519 approval key have different jobs.
+The scheduled controller receives the HMAC key so it can authorize one-use
+worker requests, plus only the pinned approval *public* key so it can verify a
+released queue. The approval private key is supplied only to the attended
+`release` command and is never required by `run-next` or passed to Claude. Thus
+an unattended scheduler cannot manufacture the user-release signature with its
+normal runtime credentials.
 
 ## OMC collaboration lane
 

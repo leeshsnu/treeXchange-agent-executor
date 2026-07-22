@@ -199,6 +199,35 @@ Claude Maker profile. Protected policy, governance, workflow, control-plane,
 production, customer-data, deployment, spend and public-claim work remain
 outside this lane and require their existing attended Gate.
 
+The first deterministic controller narrows this further to one read-only
+Reviewer operation. Its private queue is not authority merely because it exists.
+The user first approves the SHA-256 digest of the immutable queue manifest. The
+attended release command must receive that exact digest and signs the queue id,
+repository, approval identity, release window, one-operation cap and manifest
+digest with the owner-only approval private key. Any later change to objective,
+acceptance criteria, dependency, model profile, exact commit, branch or path
+scope invalidates the release before a worker request is signed. Mutable state,
+attempt counters, sanitized results and events are excluded from the manifest
+digest so the state machine can advance without expanding authority.
+
+The attended queue release and automated worker request use separate keys. The
+release is Ed25519-signed by an owner-only private key used only by the attended
+`release` command. The active activation packet pins the SHA-256 digest of its
+public key. `run-next` receives only that public key, so it can verify the exact
+approved manifest but cannot mint a release. The controller HMAC key remains
+capable only of signing the single-use request derived from an already valid
+release.
+
+The controller key is injected only into the deterministic controller and is
+removed from the Claude child environment by the worker. The approval private
+key is not part of the unattended runtime environment at all. Draft inspection
+does not require either key. Paused U2 denies before reading a queue; an active
+run also requires the exact executor SHA, current activation window, Reviewer
+role, current signed queue release, remaining one-operation release budget,
+fresh single-use nonce and the repository-wide model-call budget. A crash or
+malformed result leaves work `running` or `failed`; it never authorizes an
+automatic retry, source write or integration.
+
 ## Residual administrative risk
 
 The repository owner is also its administrator. Branch and environment

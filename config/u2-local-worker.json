@@ -17,6 +17,11 @@
     "key_environment": "TREEXCHANGE_U2_CONTROLLER_KEY",
     "minimum_key_bytes": 32
   },
+  "approver": {
+    "key_id": "u2-attended-approval-v1",
+    "public_key_path_environment": "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_PATH",
+    "public_key_sha256": null
+  },
   "repositories": [
     "leeshsnu/treeXchange-agent-executor",
     "leeshsnu/treeXchange-season2"
@@ -59,7 +64,8 @@
     "docs/governance/**"
   ],
   "git": {
-    "required_branch_prefix": "claude/",
+    "required_maker_branch_prefix": "claude/",
+    "forbidden_reviewer_branches": ["main", "master"],
     "require_clean_start": true,
     "forbid_commit_during_model_run": true,
     "forbid_push": true,
