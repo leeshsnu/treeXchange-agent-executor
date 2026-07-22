@@ -327,20 +327,6 @@ class ProposalTests(unittest.TestCase):
                     current_content="# 현재 한국어 문서\n",
                 )
 
-    def test_maker_uses_collision_checked_github_env_writer(self):
-        class FixedDigest:
-            def hexdigest(self):
-                return "collision"
-
-        value = "safe\nTREEXCHANGE_collision\nunsafe"
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-            core.hashlib, "sha256", return_value=FixedDigest()
-        ):
-            path = Path(directory) / "github-env"
-            with self.assertRaisesRegex(core.GateError, "safely written"):
-                core.append_github_env(path, "U1_MAKER_PROMPT", value)
-            self.assertFalse(path.exists())
-
     def test_unchanged_proposal_is_rejected(self):
         result = valid_result("same")
         with self.assertRaisesRegex(core.GateError, "must change"):
@@ -429,7 +415,14 @@ class StaticWorkflowTests(unittest.TestCase):
         )
 
     def test_model_has_no_tools_and_uses_explicit_opus(self):
-        self.assertIn("prompt: ${{ env.U1_MAKER_PROMPT }}", self.workflow)
+        self.assertIn("prompt_file: maker_input/PROMPT.md", self.workflow)
+        self.assertNotIn("prompt: ${{ env.", self.workflow)
+        self.assertNotIn("STRUCTURED_OUTPUT:", self.workflow)
+        self.assertIn('--execution-file "$RUNNER_TEMP/claude-execution-output.json"', self.workflow)
+        self.assertIn(
+            "anthropics/claude-code-action/base-action@3553f84341b92da26052e28acf1aa898f9511f32",
+            self.workflow,
+        )
         self.assertIn("--model claude-opus-4-8", self.workflow)
         self.assertIn('--tools ""', self.workflow)
         self.assertRegex(self.workflow, r"--disallowedTools[^\n]*Write")

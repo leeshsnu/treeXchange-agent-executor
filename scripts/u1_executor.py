@@ -768,15 +768,46 @@ CHANGES_REQUESTED for any open P0, P1, or P2 finding.
     return prompt
 
 
-def append_github_env(path: Path, name: str, value: str) -> None:
-    delimiter = f"TREEXCHANGE_{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
-    if delimiter in value or "\x00" in value:
-        fail("prompt cannot be safely written to the runner environment", INVALID)
+def write_private_prompt(path: Path, value: str) -> None:
+    if not value or "\x00" in value or path.exists():
+        fail("private prompt cannot be safely written", INVALID)
     try:
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
     except OSError:
-        fail("runner environment file is unavailable", INVALID)
+        fail("private prompt file is unavailable", INVALID)
+
+
+def load_structured_output(path: Path, label: str) -> dict[str, Any]:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        fail(f"{label} execution output is unavailable", INVALID)
+    if not raw or len(raw) > 2_000_000:
+        fail(f"{label} execution output is empty or oversized", INVALID)
+    try:
+        messages = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail(f"{label} execution output is malformed", INVALID)
+    if not isinstance(messages, list) or len(messages) > 500:
+        fail(f"{label} execution output has an invalid message ledger", INVALID)
+    results = [
+        message
+        for message in messages
+        if isinstance(message, dict) and message.get("type") == "result"
+    ]
+    if len(results) != 1:
+        fail(f"{label} execution output must contain exactly one result", INVALID)
+    result_message = results[0]
+    if (
+        result_message.get("subtype") != "success"
+        or result_message.get("is_error") is not False
+    ):
+        fail(f"{label} execution did not succeed", INVALID)
+    structured = result_message.get("structured_output")
+    if not isinstance(structured, dict):
+        fail(f"{label} structured output is missing", INVALID)
+    return structured
 
 
 def clean_text(value: Any, field: str, max_length: int) -> str:
@@ -911,13 +942,14 @@ def main() -> int:
     prepare = subparsers.add_parser("prepare")
     add_ticket_argument(prepare)
     prepare.add_argument("--output-dir", type=Path, required=True)
-    prompt = subparsers.add_parser("emit-prompt-env")
+    prompt = subparsers.add_parser("emit-prompt-file")
     prompt.add_argument("--input-dir", type=Path, required=True)
-    prompt.add_argument("--github-env", type=Path, required=True)
+    prompt.add_argument("--output", type=Path, required=True)
     recheck = subparsers.add_parser("recheck")
     add_ticket_argument(recheck)
     recheck.add_argument("--metadata", type=Path, required=True)
     capture = subparsers.add_parser("capture-output")
+    capture.add_argument("--execution-file", type=Path, required=True)
     capture.add_argument("--output", type=Path, required=True)
     render = subparsers.add_parser("render")
     render.add_argument("--result", type=Path, required=True)
@@ -936,22 +968,12 @@ def main() -> int:
             print("VALID")
             return 0
         if args.command == "capture-output":
-            raw = os.environ.get("STRUCTURED_OUTPUT", "")
-            if not raw:
-                fail("Claude structured output is missing", INVALID)
-            try:
-                result = json.loads(raw)
-            except json.JSONDecodeError:
-                fail("Claude structured output is malformed", INVALID)
-            if not isinstance(result, dict):
-                fail("Claude structured output must be an object", INVALID)
+            result = load_structured_output(args.execution_file, "Claude review")
             validate_result(result)
             args.output.write_text(json.dumps(result, ensure_ascii=False) + "\n", encoding="utf-8")
             return 0
-        if args.command == "emit-prompt-env":
-            append_github_env(
-                args.github_env, "U1_REVIEW_PROMPT", build_embedded_prompt(args.input_dir)
-            )
+        if args.command == "emit-prompt-file":
+            write_private_prompt(args.output, build_embedded_prompt(args.input_dir))
             print("PROMPT_READY")
             return 0
         if args.command == "render":

@@ -634,11 +634,12 @@ def main() -> int:
     prepare = subparsers.add_parser("prepare")
     add_ticket_argument(prepare)
     prepare.add_argument("--output-dir", type=Path, required=True)
-    prompt = subparsers.add_parser("emit-prompt-env")
+    prompt = subparsers.add_parser("emit-prompt-file")
     prompt.add_argument("--input-dir", type=Path, required=True)
-    prompt.add_argument("--github-env", type=Path, required=True)
+    prompt.add_argument("--output", type=Path, required=True)
     capture = subparsers.add_parser("capture-output")
     capture.add_argument("--input-dir", type=Path, required=True)
+    capture.add_argument("--execution-file", type=Path, required=True)
     capture.add_argument("--output", type=Path, required=True)
     recheck = subparsers.add_parser("recheck")
     add_ticket_argument(recheck)
@@ -665,23 +666,13 @@ def main() -> int:
             print("VALID")
             return 0
         if args.command == "capture-output":
-            raw = os.environ.get("STRUCTURED_OUTPUT", "")
-            if not raw:
-                core.fail("Claude Maker structured output is missing", core.INVALID)
-            try:
-                result = json.loads(raw)
-            except json.JSONDecodeError:
-                core.fail("Claude Maker structured output is malformed", core.INVALID)
-            if not isinstance(result, dict):
-                core.fail("Claude Maker structured output must be an object", core.INVALID)
+            result = core.load_structured_output(args.execution_file, "Claude Maker")
             current = (args.input_dir / "CURRENT.md").read_text(encoding="utf-8")
             validate_result(result, current_content=current)
             args.output.write_text(json.dumps(result, ensure_ascii=False) + "\n", encoding="utf-8")
             return 0
-        if args.command == "emit-prompt-env":
-            core.append_github_env(
-                args.github_env, "U1_MAKER_PROMPT", build_embedded_prompt(args.input_dir)
-            )
+        if args.command == "emit-prompt-file":
+            core.write_private_prompt(args.output, build_embedded_prompt(args.input_dir))
             print("PROMPT_READY")
             return 0
         if args.command == "render":

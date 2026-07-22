@@ -37,7 +37,10 @@ exact implementation and activation packet receive separate approval.
   contents-write or pull-request-write credential is introduced.
 - The executor never stores Season 2 source or review inputs as artifacts.
 - Action logs are public, so private file contents and model output are never
-  printed.
+  passed through workflow-expression values or printed. The pinned Claude base
+  action receives only an owner-readable prompt-file path, suppresses full
+  output, and the trusted executor reads structured output from the private
+  Runner execution file before deleting all transient material.
 - Public dispatch accepts only one opaque reservation ticket. Pilot, PR, Head,
   and request details are recovered from a bounded private reservation artifact
   only after the protected environment admits the job. The public ledger records

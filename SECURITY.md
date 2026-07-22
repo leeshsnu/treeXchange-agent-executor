@@ -59,6 +59,14 @@ only the current bounded UTF-8 document, fixed Maker boundary, and metadata as
 delimited untrusted evidence. All file, shell, GitHub, web, MCP, and delegation
 tools are disabled.
 
+Because this executor repository and its Action logs are public, private prompt
+or model-output text must never cross a workflow expression. Both Claude lanes
+write the bounded prompt to an owner-readable Runner file and pass only that
+path to the pinned Claude base action. Full output is disabled. Trusted capture
+reads the structured result from the fixed private Runner execution file, and
+the cleanup step deletes the prompt, execution ledger, result, and rendered
+comment. The credentialed action receives no GitHub token input.
+
 The trusted publisher rejects oversized output, credential-shaped content,
 hidden control markup, fence escape text, unchanged proposals, stale leases,
 an existing pilot PR, duplicate tickets, duplicate proposal markers, pause

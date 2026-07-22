@@ -37,6 +37,13 @@ if grep -RInE 'pull_request_target|issue_comment|schedule:' \
   exit 1
 fi
 
+if grep -RInE 'prompt:[[:space:]]*\$\{\{[[:space:]]*env\.|STRUCTURED_OUTPUT:[[:space:]]*\$\{\{' \
+  .github/workflows/u1-claude-review.yml \
+  .github/workflows/u1-claude-maker.yml; then
+  echo "private prompt and model output must use Runner files, not workflow expressions" >&2
+  exit 1
+fi
+
 if grep -nE 'contents:[[:space:]]+write|pull-requests:[[:space:]]+write|issues:[[:space:]]+write|deployments:[[:space:]]+write' \
   .github/workflows/u1-claude-review.yml \
   .github/workflows/u1-claude-maker.yml; then

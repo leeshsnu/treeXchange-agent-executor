@@ -364,13 +364,41 @@ class SourceBoundaryTests(unittest.TestCase):
             with self.assertRaises(u1.GateError):
                 u1.build_embedded_prompt(root)
 
-    def test_github_env_multiline_value_is_bounded_by_unique_delimiter(self):
+    def test_private_prompt_file_is_created_once_with_owner_only_permissions(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "github-env"
-            u1.append_github_env(path, "U1_REVIEW_PROMPT", "line one\nline two")
-            value = path.read_text(encoding="utf-8")
-        self.assertTrue(value.startswith("U1_REVIEW_PROMPT<<TREEXCHANGE_"))
-        self.assertTrue(value.endswith("\n"))
+            path = Path(directory) / "prompt.md"
+            u1.write_private_prompt(path, "비공개 검토 프롬프트\n")
+            self.assertEqual(path.read_text(encoding="utf-8"), "비공개 검토 프롬프트\n")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with self.assertRaisesRegex(u1.GateError, "safely written"):
+                u1.write_private_prompt(path, "overwrite")
+
+    def test_structured_output_is_read_from_private_execution_file(self):
+        structured = {
+            "verdict": "APPROVE",
+            "summary": "Bounded review passed.",
+            "findings": [],
+            "verification": ["Exact evidence reviewed."],
+            "requirement_coverage": ["Boundary covered."],
+            "residual_risk": ["No live dispatch."],
+        }
+        messages = [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "structured_output": structured,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claude-execution-output.json"
+            path.write_text(json.dumps(messages), encoding="utf-8")
+            self.assertEqual(u1.load_structured_output(path, "Claude review"), structured)
+            messages.append(dict(messages[-1]))
+            path.write_text(json.dumps(messages), encoding="utf-8")
+            with self.assertRaisesRegex(u1.GateError, "exactly one result"):
+                u1.load_structured_output(path, "Claude review")
 
     def test_github_wrapped_base64_is_accepted(self):
         encoded = base64.encodebytes(b"bounded documentation\n").decode("ascii")
@@ -493,7 +521,7 @@ class StaticWorkflowTests(unittest.TestCase):
 
     def test_action_and_checkout_are_immutable(self):
         self.assertIn(
-            "anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32",
+            "anthropics/claude-code-action/base-action@3553f84341b92da26052e28acf1aa898f9511f32",
             self.workflow,
         )
         self.assertIn(
@@ -505,7 +533,10 @@ class StaticWorkflowTests(unittest.TestCase):
         self.assertNotRegex(self.workflow, r"(?m)^\s+(?:contents|pull-requests|issues): write$")
 
     def test_model_has_no_read_or_other_tools(self):
-        self.assertIn("prompt: ${{ env.U1_REVIEW_PROMPT }}", self.workflow)
+        self.assertIn("prompt_file: review_input/PROMPT.md", self.workflow)
+        self.assertNotIn("prompt: ${{ env.", self.workflow)
+        self.assertNotIn("STRUCTURED_OUTPUT:", self.workflow)
+        self.assertIn('--execution-file "$RUNNER_TEMP/claude-execution-output.json"', self.workflow)
         self.assertIn("--model claude-opus-4-8", self.workflow)
         self.assertNotIn("--fallback-model", self.workflow)
         self.assertIn('--tools ""', self.workflow)
