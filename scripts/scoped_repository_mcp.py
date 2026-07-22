@@ -83,6 +83,7 @@ class RepositoryTools:
         target_sha: str | None = None,
         diff_scopes: list[str] | None = None,
         max_diff_bytes: int | None = None,
+        review_receipt: Path | None = None,
     ) -> None:
         self.repo = repo.resolve()
         if not self.repo.is_dir():
@@ -97,6 +98,7 @@ class RepositoryTools:
         self.target_sha = target_sha
         self.diff_scopes = tuple(diff_scopes or [])
         self.max_diff_bytes = max_diff_bytes
+        self.review_receipt = self._validate_receipt_path(review_receipt)
         if (role == "scoped_maker" and not self.read_scopes) or max_file_bytes <= 0:
             raise ScopeError("scoped tool policy is incomplete")
         for scope in [*self.read_scopes, *self.write_paths, *self.diff_scopes]:
@@ -113,6 +115,7 @@ class RepositoryTools:
             or not self.diff_scopes
             or not isinstance(max_diff_bytes, int)
             or max_diff_bytes <= 0
+            or self.review_receipt is None
         ):
             raise ScopeError("reviewer diff policy is incomplete")
         if role == "scoped_maker" and not self.write_paths:
@@ -120,6 +123,54 @@ class RepositoryTools:
         if role == "scoped_maker" and any(path.endswith("/**") for path in write_paths):
             raise ScopeError("maker write paths must name exact files")
         self.tracked_paths = self._load_tracked_paths()
+
+    def _validate_receipt_path(self, value: Path | None) -> Path | None:
+        if self.role == "scoped_maker":
+            if value is not None:
+                raise ScopeError("maker cannot receive a review receipt path")
+            return None
+        if value is None or not value.is_absolute():
+            raise ScopeError("review receipt path is unavailable")
+        state = (self.repo / ".agent-state").resolve()
+        try:
+            state.relative_to(self.repo)
+        except ValueError as error:
+            raise ScopeError("review receipt directory escaped the repository") from error
+        if value.parent.resolve() != state or value.exists() or value.is_symlink():
+            raise ScopeError("review receipt path is not a fresh private state file")
+        return value
+
+    def _write_review_receipt(self, evidence: dict[str, Any]) -> None:
+        assert self.review_receipt is not None
+        descriptor: int | None = None
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(self.review_receipt, flags, 0o600)
+            payload = json.dumps(
+                {
+                    "schema_version": 1,
+                    "base_sha": evidence["base_sha"],
+                    "target_sha": evidence["target_sha"],
+                    "sha256": evidence["sha256"],
+                    "bytes": evidence["bytes"],
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = None
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as error:
+            raise ScopeError("review diff receipt could not be recorded") from error
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
 
     def _load_tracked_paths(self) -> frozenset[str]:
         try:
@@ -196,13 +247,15 @@ class RepositoryTools:
             raise ScopeError("review diff must be bounded UTF-8 text") from error
         if any(pattern.search(content) for pattern in u1_executor.SECRET_PATTERNS):
             raise ScopeError("review diff resembles a credential")
-        return {
+        evidence = {
             "base_sha": self.base_sha,
             "target_sha": self.target_sha,
             "sha256": hashlib.sha256(raw).hexdigest(),
             "bytes": len(raw),
             "content": content,
         }
+        self._write_review_receipt(evidence)
+        return evidence
 
     def _target(self, value: Any, *, writable: bool, must_exist: bool) -> tuple[str, Path]:
         relative = normalize_path(value)
@@ -492,6 +545,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-sha")
     parser.add_argument("--diff-scopes", default="[]")
     parser.add_argument("--max-diff-bytes", type=int)
+    parser.add_argument("--review-receipt", type=Path)
     return parser.parse_args()
 
 
@@ -513,6 +567,7 @@ def main() -> int:
             args.target_sha,
             diff_scopes,
             args.max_diff_bytes,
+            args.review_receipt,
         )
         serve(tools)
     except (json.JSONDecodeError, ScopeError):

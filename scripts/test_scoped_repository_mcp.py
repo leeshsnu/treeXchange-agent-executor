@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 
@@ -70,11 +71,13 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
             ["git", "rev-parse", "HEAD"], cwd=self.repo, text=True,
             capture_output=True, check=True,
         ).stdout.strip()
+        (self.repo / ".agent-state").mkdir()
 
     def tearDown(self):
         self.temporary.cleanup()
 
     def reviewer(self):
+        receipt = self.repo / ".agent-state" / f"receipt-{uuid.uuid4().hex}.json"
         return mcp.RepositoryTools(
             self.repo,
             "repository_reviewer",
@@ -85,6 +88,7 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
             self.head,
             ["services/model/HANDOFF.md", "config/policy.json"],
             100_000,
+            receipt,
         )
 
     def maker(self):
@@ -108,7 +112,8 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
         self.assertEqual(matches[0]["path"], "services/model/README.md")
 
     def test_reviewer_reads_exact_signed_diff_only_through_review_tool(self):
-        evidence = self.reviewer().call("read_diff", {})
+        tools = self.reviewer()
+        evidence = tools.call("read_diff", {})
         canonical = mcp.bridge.bounded_diff(self.repo, self.base, self.head)
         self.assertEqual(evidence["base_sha"], self.base)
         self.assertEqual(evidence["target_sha"], self.head)
@@ -117,6 +122,13 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
         self.assertIn('"mode":"reviewed"', evidence["content"])
         self.assertRegex(evidence["sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(evidence["bytes"], len(evidence["content"].encode()))
+        receipt = tools.review_receipt
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+        recorded = json.loads(receipt.read_text(encoding="utf-8"))
+        self.assertEqual(recorded["sha256"], evidence["sha256"])
+        with self.assertRaisesRegex(mcp.ScopeError, "receipt"):
+            tools.call("read_diff", {})
         with self.assertRaises(mcp.ScopeError):
             self.maker().call("read_diff", {})
 
@@ -158,6 +170,7 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
                 self.head,
                 ["services/model/HANDOFF.md", "config/policy.json"],
                 100_000,
+                self.repo / ".agent-state" / f"receipt-{uuid.uuid4().hex}.json",
             )
             with self.assertRaises(mcp.ScopeError):
                 tools.call("read_file", {"path": path})
@@ -281,6 +294,8 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
                 '["services/model/HANDOFF.md","config/policy.json"]',
                 "--max-diff-bytes",
                 "100000",
+                "--review-receipt",
+                str(self.repo / ".agent-state/stdio-receipt.json"),
             ],
             input="".join(json.dumps(item) + "\n" for item in messages),
             text=True,

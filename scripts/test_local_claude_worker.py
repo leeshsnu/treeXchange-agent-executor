@@ -311,6 +311,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             self.config,
             {"type": "object"},
             worker.bridge.DEFAULT_MODEL,
+            Path("/tmp/repo/.agent-state/review-receipt.json"),
         )
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertNotIn("--dangerously-skip-permissions", command)
@@ -324,6 +325,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         self.assertIn('["services/model/**"]', server["args"])
         self.assertIn("[]", server["args"])
         self.assertIn('["services/model/HANDOFF_NEEDED.md"]', server["args"])
+        self.assertIn("--review-receipt", server["args"])
         settings = json.loads(command[command.index("--settings") + 1])
         for tool in ("Bash", "Read", "Glob", "Grep", "Edit", "Write"):
             self.assertIn(tool, settings["permissions"]["deny"])
@@ -364,6 +366,36 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         self.assertNotIn("BEGIN_UNTRUSTED_DIFF_", prompt)
         self.assertIn(digest, prompt)
         self.assertIn("read_diff exactly once", prompt)
+
+    def test_review_receipt_machine_binds_exact_diff_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = GitRepository(directory)
+            request = repository.reviewer_request()
+            diff = worker.bridge.bounded_diff(
+                repository.root, request["base_sha"], request["target_sha"]
+            )
+            digest = hashlib.sha256(diff.encode()).hexdigest()
+            receipt = repository.root / ".agent-state/review-receipt.json"
+            worker.bridge.save_private_json(
+                receipt,
+                {
+                    "schema_version": 1,
+                    "base_sha": request["base_sha"],
+                    "target_sha": request["target_sha"],
+                    "sha256": digest,
+                    "bytes": len(diff.encode()),
+                },
+            )
+            worker.validate_review_receipt(
+                repository.root, receipt, request, digest, len(diff.encode())
+            )
+            value = json.loads(receipt.read_text(encoding="utf-8"))
+            value["sha256"] = "0" * 64
+            worker.bridge.save_private_json(receipt, value)
+            with self.assertRaisesRegex(worker.WorkerError, "exact signed diff"):
+                worker.validate_review_receipt(
+                    repository.root, receipt, request, digest, len(diff.encode())
+                )
 
     def test_child_environment_keeps_subscription_oauth_but_strips_other_secrets(self):
         values = {
@@ -621,6 +653,82 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(worker.WorkerError, "proposed and paused"):
             worker.run(args)
+
+    def test_run_denies_active_config_when_running_sha_is_not_user_trusted(self):
+        active = copy.deepcopy(self.config)
+        active["status"] = "approved_active"
+        active["activation"]["enabled"] = True
+        args = argparse.Namespace(
+            repo=Path("/not/read"),
+            request=Path("/not/read/request.json"),
+            output=Path("/not/read/output.json"),
+            ledger=Path("/not/read/ledger.json"),
+            config=worker.CONFIG_PATH,
+        )
+        with mock.patch.object(worker, "load_config", return_value=active):
+            with mock.patch.object(worker.bridge, "exact_commit", return_value="a" * 40):
+                with mock.patch.dict(
+                    worker.os.environ,
+                    {"U2_EXECUTOR_TRUSTED_SHA": "b" * 40},
+                    clear=False,
+                ):
+                    with self.assertRaisesRegex(worker.WorkerError, "exact trusted SHA"):
+                        worker.run(args)
+
+    def test_run_quarantines_reviewer_that_never_consumes_diff_and_counts_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = GitRepository(directory)
+            request = repository.reviewer_request()
+            request["expires_at"] = (
+                dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)
+            ).isoformat().replace("+00:00", "Z")
+            request = sign_request(request)
+            state = repository.root / ".agent-state"
+            state.mkdir()
+            request_path = state / "request.json"
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            os.chmod(request_path, 0o600)
+            output_path = state / "output.json"
+            ledger = worker.bridge.shared_ledger_path(repository.root)
+            active = copy.deepcopy(self.config)
+            active["status"] = "approved_active"
+            active["activation"]["enabled"] = True
+            trusted = git(worker.ROOT, "rev-parse", "HEAD")
+            review = {
+                "verdict": "APPROVE",
+                "summary": "No blocking issue.",
+                "findings": [],
+                "verification": ["Inspected the change."],
+                "requirement_coverage": ["Bounded review."],
+                "residual_risk": ["Runtime not exercised."],
+            }
+            args = argparse.Namespace(
+                repo=repository.root,
+                request=request_path,
+                output=output_path,
+                ledger=ledger,
+                config=worker.CONFIG_PATH,
+            )
+            environment = {
+                self.config["controller"]["key_environment"]: SIGNING_KEY,
+                "U2_EXECUTOR_TRUSTED_SHA": trusted,
+            }
+            with mock.patch.object(worker, "load_config", return_value=active):
+                with mock.patch.object(worker.bridge, "require_local_claude_runtime"):
+                    with mock.patch.object(
+                        worker,
+                        "invoke_claude",
+                        return_value=({"session_id": "test", "num_turns": 1}, review),
+                    ):
+                        with mock.patch.dict(worker.os.environ, environment, clear=False):
+                            with self.assertRaisesRegex(
+                                worker.WorkerError, "review diff receipt"
+                            ):
+                                worker.run(args)
+            calls = worker.bridge.load_effective_ledger(ledger, ())["calls"]
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["status"], "failed_or_quarantined")
+            self.assertFalse(output_path.exists())
 
 
 if __name__ == "__main__":

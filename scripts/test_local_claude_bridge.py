@@ -358,6 +358,20 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, "budget reservation"):
                 bridge.reserve_attempt(ledger, replay)
 
+    def test_quarantined_model_call_still_consumes_window_and_daily_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            first = ledger_attempt(1)
+            bridge.reserve_attempt(ledger, first)
+            bridge.finish_attempt(
+                ledger,
+                first["attempt_id"],
+                {"status": "failed_or_quarantined"},
+            )
+            result = bridge.reserve_attempt(ledger, ledger_attempt(2))
+            self.assertEqual(result["window_calls"], 2)
+            self.assertEqual(result["daily_calls"], 2)
+
     def test_legacy_duplicate_without_model_remains_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Path(directory) / ".agent-state" / "ledger.json"

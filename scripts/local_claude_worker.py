@@ -13,6 +13,7 @@ import re
 import stat
 import subprocess
 import sys
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -597,44 +598,52 @@ def child_environment(config: dict[str, Any]) -> dict[str, str]:
 
 
 def scoped_mcp_config(
-    repo: Path, request: dict[str, Any], config: dict[str, Any]
+    repo: Path,
+    request: dict[str, Any],
+    config: dict[str, Any],
+    review_receipt: Path | None = None,
 ) -> dict[str, Any]:
+    args = [
+        str(SCOPED_MCP_PATH),
+        "--repo",
+        str(repo.resolve()),
+        "--role",
+        request["role"],
+        "--read-scopes",
+        json.dumps(request["read_paths"], separators=(",", ":")),
+        "--write-paths",
+        json.dumps(
+            request["allowed_paths"] if request["role"] == "scoped_maker" else [],
+            separators=(",", ":"),
+        ),
+        "--max-file-bytes",
+        str(config["limits"]["maximum_diff_bytes"]),
+        "--base-sha",
+        request["base_sha"],
+        "--target-sha",
+        request["target_sha"],
+        "--diff-scopes",
+        json.dumps(
+            request["allowed_paths"]
+            if request["role"] == "repository_reviewer"
+            else [],
+            separators=(",", ":"),
+        ),
+        "--max-diff-bytes",
+        str(config["limits"]["maximum_diff_bytes"]),
+    ]
+    if request["role"] == "repository_reviewer":
+        if review_receipt is None:
+            fail("reviewer requires a private diff receipt path")
+        args.extend(["--review-receipt", str(review_receipt)])
+    elif review_receipt is not None:
+        fail("Maker cannot receive a review receipt path")
     return {
         "mcpServers": {
             MCP_SERVER_NAME: {
                 "type": "stdio",
                 "command": sys.executable,
-                "args": [
-                    str(SCOPED_MCP_PATH),
-                    "--repo",
-                    str(repo.resolve()),
-                    "--role",
-                    request["role"],
-                    "--read-scopes",
-                    json.dumps(request["read_paths"], separators=(",", ":")),
-                    "--write-paths",
-                    json.dumps(
-                        request["allowed_paths"]
-                        if request["role"] == "scoped_maker"
-                        else [],
-                        separators=(",", ":"),
-                    ),
-                    "--max-file-bytes",
-                    str(config["limits"]["maximum_diff_bytes"]),
-                    "--base-sha",
-                    request["base_sha"],
-                    "--target-sha",
-                    request["target_sha"],
-                    "--diff-scopes",
-                    json.dumps(
-                        request["allowed_paths"]
-                        if request["role"] == "repository_reviewer"
-                        else [],
-                        separators=(",", ":"),
-                    ),
-                    "--max-diff-bytes",
-                    str(config["limits"]["maximum_diff_bytes"]),
-                ],
+                "args": args,
             }
         }
     }
@@ -719,9 +728,10 @@ def claude_command(
     config: dict[str, Any],
     schema: dict[str, Any],
     model: str,
+    review_receipt: Path | None = None,
 ) -> list[str]:
     settings = permission_settings()
-    mcp_config = scoped_mcp_config(repo, request, config)
+    mcp_config = scoped_mcp_config(repo, request, config, review_receipt)
     command = [
         "claude",
         "-p",
@@ -787,6 +797,7 @@ def invoke_claude(
     prompt: str,
     schema: dict[str, Any],
     model: str,
+    review_receipt: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     bridge.require_local_subscription_auth()
     if len(prompt.encode("utf-8")) > config["limits"]["maximum_prompt_bytes"]:
@@ -795,7 +806,7 @@ def invoke_claude(
         fail("Claude model is outside the approved routing policy")
     try:
         completed = subprocess.run(
-            claude_command(repo, request, config, schema, model),
+            claude_command(repo, request, config, schema, model, review_receipt),
             cwd=repo,
             input=prompt,
             text=True,
@@ -955,6 +966,28 @@ def build_worker_attempt(
     }
 
 
+def validate_review_receipt(
+    repo: Path,
+    path: Path,
+    request: dict[str, Any],
+    input_digest: str,
+    diff_bytes: int,
+) -> None:
+    if path.is_symlink():
+        fail("review diff receipt must not be a symlink")
+    resolved = private_agent_path(repo, path, "review diff receipt", must_exist=True)
+    receipt = load_json(resolved, "review diff receipt")
+    expected = {
+        "schema_version": 1,
+        "base_sha": request["base_sha"],
+        "target_sha": request["target_sha"],
+        "sha256": input_digest,
+        "bytes": diff_bytes,
+    }
+    if receipt != expected:
+        fail("Claude Reviewer did not consume the exact signed diff evidence")
+
+
 def run(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     require_activation(config)
@@ -971,11 +1004,19 @@ def run(args: argparse.Namespace) -> None:
     verify_controller_signature(raw_request, config)
     verify_repository_state(repo, request)
     model = bridge.resolve_model(request["task_profile"])
+    review_receipt: Path | None = None
     if request["role"] == "repository_reviewer":
         diff = bridge.bounded_diff(repo, request["base_sha"], request["target_sha"])
         input_digest = hashlib.sha256(diff.encode("utf-8")).hexdigest()
         prompt = reviewer_prompt(request, input_digest, len(diff.encode("utf-8")))
         schema = load_schema(REVIEW_SCHEMA_PATH, "review schema")
+        review_receipt = private_agent_path(
+            repo,
+            Path(".agent-state")
+            / f".u2-diff-receipt-{uuid.uuid4().hex}.json",
+            "review diff receipt",
+            must_exist=False,
+        )
     else:
         prompt = maker_prompt(request)
         schema = load_schema(MAKER_SCHEMA_PATH, "Maker schema")
@@ -985,7 +1026,17 @@ def run(args: argparse.Namespace) -> None:
     attempt = build_worker_attempt(request, model, input_digest)
     reservation = bridge.reserve_attempt(ledger_path, attempt, legacy_ledgers)
     try:
-        wrapper, result = invoke_claude(repo, request, config, prompt, schema, model)
+        wrapper, result = invoke_claude(
+            repo, request, config, prompt, schema, model, review_receipt
+        )
+        if review_receipt is not None:
+            validate_review_receipt(
+                repo,
+                review_receipt,
+                request,
+                input_digest,
+                len(diff.encode("utf-8")),
+            )
         actual_paths, change_digest = validate_postconditions(repo, request, config, result)
     except (WorkerError, bridge.BridgeError, u1_executor.GateError) as error:
         bridge.finish_attempt(
@@ -998,6 +1049,12 @@ def run(args: argparse.Namespace) -> None:
             },
         )
         raise
+    finally:
+        if review_receipt is not None:
+            try:
+                review_receipt.unlink()
+            except FileNotFoundError:
+                pass
     output = {
         "schema_version": 1,
         "request_id": request["request_id"],

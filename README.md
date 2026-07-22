@@ -131,8 +131,10 @@ review bridge. It defines two explicit execution profiles:
   embedded in the authority-bearing prompt: `read_diff` derives it from the
   signed exact Base and Head through the same canonical bounded-diff generator
   used to compute the prompt digest and byte count, rechecks the signed
-  changed-path scope and returns it as untrusted tool evidence. Claude's built-in file
-  tools are disabled. Full-file context under workflow, config, operations and
+  changed-path scope and returns it as untrusted tool evidence. The trusted MCP
+  writes an owner-only one-use receipt; the controller rejects the review unless
+  that receipt machine-matches the signed Base, Head, digest and byte count.
+  Claude's built-in file tools are disabled. Full-file context under workflow, config, operations and
   governance control paths remains unavailable; only exact signed diff hunks
   may include changes there. The local tool server enforces signed
   repository-relative scopes on every call; shell, network, third-party MCP,
@@ -165,6 +167,11 @@ worktree cannot erase their budget use. The Claude child process receives only a
 minimal environment; controller and GitHub credentials, proxy variables and
 additional CA bundles are removed while the local subscription OAuth credential
 may be inherited.
+
+Every invocation reserved before Claude starts consumes its daily and window
+budget even when the result is later failed or quarantined. Pre-call denials do
+not consume a model call. This prevents a buggy or adversarial result from hiding
+real usage; the fixed caps remain the spend backstop.
 
 The worker no longer relies on Claude Code's built-in Read/Edit path-rule
 precedence for repository isolation. The local MCP server is part of the pinned

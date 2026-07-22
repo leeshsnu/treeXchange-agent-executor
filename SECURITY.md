@@ -158,7 +158,9 @@ network MCP server is loaded. The read-only Reviewer receives one exact
 Base-to-Head diff operation plus three scoped repository-read operations. The
 diff is returned as untrusted tool evidence instead of being embedded in the
 authority-bearing prompt. The bridge and MCP tool share one canonical diff
-generator, and tests bind its content, digest and byte count. Full-file reads under workflow, config, operations
+generator. The MCP emits an owner-only one-use receipt, and the controller
+machine-verifies its Base, Head, content digest and byte count before accepting
+any Reviewer result. Full-file reads under workflow, config, operations
 and governance control paths are denied; a Reviewer can see changes there only
 as exact signed diff hunks. The Maker adds two write operations that accept only
 signed exact low-risk files in an already-created clean `claude/` worktree. The server
@@ -183,6 +185,9 @@ rejects symlinks and compares the actual path set to the signed scope and model
 claim. Failure leaves the isolated worktree quarantined; it never triggers an
 automatic reset, commit, push or publication. Reviewer writes, Maker path drift,
 history drift and partial edits behind a `BLOCKED` status are all denial states.
+Because quarantine is determined after a model returns, that invocation remains
+counted in both window and daily budgets; only denials completed before model
+startup avoid call consumption.
 
 The first U2 activation remains limited to low-risk Season 2 Maker work and
 read-only review. The public executor repository itself is never writable by the
