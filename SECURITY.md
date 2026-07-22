@@ -97,6 +97,8 @@ the repository's shared Git metadata records call identity, reported usage, and
 verdict without storing prompt text. Every linked worktree resolves the same
 ledger and OS lock; legacy worktree-local ledgers are included in cap checks.
 Legacy ledgers must be owner-only regular files inside their exact worktree.
+Pre-identifier legacy calls receive a deterministic content identity and still
+consume budget; they are never silently discarded during migration.
 Claude stderr is classified in memory into a fixed non-secret failure category;
 raw stderr is neither printed nor persisted.
 Checked-in `reviews/*.json` outputs remain Git audit evidence but are excluded

@@ -403,9 +403,11 @@ class BridgeTests(unittest.TestCase):
 
             primary_legacy = repo / ".agent-state/claude-call-ledger.json"
             linked_legacy = linked / ".agent-state/claude-call-ledger.json"
+            unbound_legacy = ledger_attempt(1)
+            unbound_legacy.pop("attempt_id")
             bridge.save_private_json(
                 primary_legacy,
-                {"schema_version": 1, "calls": [ledger_attempt(1)]},
+                {"schema_version": 1, "calls": [unbound_legacy]},
             )
             bridge.save_private_json(
                 linked_legacy,

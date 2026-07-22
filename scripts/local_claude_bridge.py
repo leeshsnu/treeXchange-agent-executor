@@ -256,13 +256,23 @@ def load_effective_ledger(path: Path, legacy_paths: tuple[Path, ...]) -> dict[st
             if not isinstance(call, dict):
                 fail("Claude call ledger contains a malformed call")
             attempt_id = call.get("attempt_id")
-            if not isinstance(attempt_id, str) or not attempt_id:
-                fail("Claude call ledger contains an unbound attempt")
-            previous = by_attempt.get(attempt_id)
+            if isinstance(attempt_id, str) and attempt_id:
+                identity = "attempt:" + attempt_id
+            else:
+                legacy_digest = hashlib.sha256(
+                    json.dumps(
+                        call,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                identity = "legacy:" + legacy_digest
+            previous = by_attempt.get(identity)
             if previous is not None and previous != call:
                 fail("Claude call ledgers disagree about one attempt")
             if previous is None:
-                by_attempt[attempt_id] = call
+                by_attempt[identity] = call
                 calls.append(call)
     return {"schema_version": 1, "calls": calls}
 
