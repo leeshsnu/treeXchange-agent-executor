@@ -70,6 +70,8 @@ class BridgeTests(unittest.TestCase):
         self.assertIn("these exact six top-level keys", prompt)
         self.assertIn("exactly severity, status, and finding", prompt)
         self.assertIn("Never reproduce raw HTML-comment delimiters", prompt)
+        self.assertIn("immediately followed by a colon or equals sign", prompt)
+        self.assertIn("reserved for the trusted renderer", prompt)
         self.assertIn("every finding under 700 characters", prompt)
 
     def test_no_tools_or_settings_are_available_to_claude(self):
