@@ -101,6 +101,13 @@ Pre-identifier legacy calls receive a deterministic content identity and still
 consume budget; they are never silently discarded during migration.
 Claude stderr is classified in memory into a fixed non-secret failure category;
 raw stderr is neither printed nor persisted.
+Before a call reservation is created, the bridge verifies that its host process
+can create and remove an owner-only probe in the default Claude Code debug-state
+directory. Claude Code requires that local state for startup and authentication.
+Granting the wrapper access to its own Claude state is distinct from model tool
+authority: the review child still receives no file, shell, web, MCP, plugin or
+delegation tools. A denied local state directory fails as
+`local_filesystem_denied` without consuming a model-call reservation.
 Checked-in `reviews/*.json` outputs remain Git audit evidence but are excluded
 from later model input; all implementation-bearing paths remain reviewable.
 If the CLI omits `structured_output`, only an exact single JSON object with no

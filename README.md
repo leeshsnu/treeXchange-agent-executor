@@ -78,6 +78,10 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
 - refuses API-key, alternate cloud-provider, alternate config-directory, and
   custom-endpoint environment overrides so the local path uses the default
   Claude Code subscription login;
+- verifies, before reserving a call, that the invoking host process can create
+  and remove an owner-only probe in Claude Code's required local debug-state
+  directory. This host-runtime access is necessary for CLI startup and does not
+  grant Claude any repository, shell, web, MCP, plugin, or delegation tool;
 - routes standard implementation and review work to `claude-opus-4-8`, while
   advanced refinement, strategic insight, and design profiles use
   `claude-fable-5` with Opus 4.8 as their only fallback;
@@ -96,7 +100,7 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
   2 output from crossing into this public executor while making every linked
   worktree consume the same caps;
 - keeps the shared call ledger owner-only, counts pre-migration worktree-local
-  ledgers, records failed attempts before invoking Claude, serializes
+  ledgers, records model attempts before invoking Claude, serializes
   reservations with an OS file lock, and refuses a duplicate
   model review of the same diff. One independent review per approved model is
   allowed for cross-model validation. Calls are bounded to 12 per work-item

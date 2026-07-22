@@ -901,6 +901,7 @@ def run(args: argparse.Namespace) -> None:
         prompt = maker_prompt(request)
         schema = load_schema(MAKER_SCHEMA_PATH, "Maker schema")
         input_digest = request_digest(request)
+    bridge.require_local_claude_runtime()
     attempt_id = request["request_id"]
     attempt = {
         "attempt_id": attempt_id,

@@ -110,6 +110,27 @@ class BridgeTests(unittest.TestCase):
                     with self.assertRaises(bridge.BridgeError):
                         bridge.invoke_claude("bounded", {"type": "object"}, 60)
 
+    def test_local_runtime_preflight_creates_and_removes_owner_only_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            with mock.patch.dict(bridge.os.environ, {}, clear=True):
+                bridge.require_local_claude_runtime(home)
+            debug_dir = home / ".claude" / "debug"
+            self.assertTrue(debug_dir.is_dir())
+            self.assertEqual(list(debug_dir.glob(".treexchange-preflight-*")), [])
+
+    def test_local_runtime_preflight_fails_without_consuming_a_model_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.dict(bridge.os.environ, {}, clear=True):
+                with mock.patch.object(
+                    bridge.os, "open", side_effect=PermissionError("denied")
+                ):
+                    with self.assertRaises(bridge.BridgeError) as raised:
+                        bridge.require_local_claude_runtime(Path(directory))
+            self.assertEqual(
+                raised.exception.failure_class, "local_filesystem_denied"
+            )
+
     def test_only_fable_5_or_opus_4_8_can_be_requested(self):
         with mock.patch.dict(bridge.os.environ, {}, clear=True):
             with self.assertRaisesRegex(bridge.BridgeError, "below or outside"):
@@ -181,6 +202,7 @@ class BridgeTests(unittest.TestCase):
             "HTTP 429 usage limit reached secret-value": "usage_or_rate_limit",
             "401 unauthorized; login required secret-value": "authentication_unavailable",
             "invalid model secret-value": "model_unavailable",
+            "EPERM operation not permitted at Timeout secret-value": "local_filesystem_denied",
             "unexpected runtime failure secret-value": "unclassified_runtime_failure",
         }
         for stderr, expected in cases.items():

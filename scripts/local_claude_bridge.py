@@ -439,6 +439,37 @@ def require_local_subscription_auth() -> None:
         )
 
 
+def require_local_claude_runtime(home: Path | None = None) -> None:
+    """Verify Claude can write its private runtime state before reserving a call."""
+    require_local_subscription_auth()
+    debug_dir = (home if home is not None else Path.home()) / ".claude" / "debug"
+    probe = debug_dir / f".treexchange-preflight-{uuid.uuid4().hex}"
+    descriptor: int | None = None
+    failure = False
+    try:
+        debug_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if debug_dir.is_symlink() or not debug_dir.is_dir():
+            failure = True
+        else:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(probe, flags, 0o600)
+    except OSError:
+        failure = True
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        with contextlib.suppress(OSError):
+            probe.unlink()
+    if failure:
+        fail(
+            "Claude local runtime cannot write its required private state",
+            failure_class="local_filesystem_denied",
+        )
+
+
 def resolve_model(task_profile: str, explicit_model: str | None = None) -> str:
     model = MODEL_BY_TASK_PROFILE.get(task_profile)
     if model is None:
@@ -450,6 +481,11 @@ def resolve_model(task_profile: str, explicit_model: str | None = None) -> str:
 
 def classify_claude_failure(stderr: str) -> str:
     value = stderr.lower()
+    if any(
+        token in value
+        for token in ("eperm", "eacces", "operation not permitted", "permission denied")
+    ):
+        return "local_filesystem_denied"
     if any(token in value for token in ("429", "rate limit", "usage limit", "quota")):
         return "usage_or_rate_limit"
     if any(
@@ -580,6 +616,7 @@ def review(args: argparse.Namespace) -> None:
     schema = review_schema(root)
     attempt_id = str(uuid.uuid4())
     selected_model = resolve_model(args.task_profile, args.model)
+    require_local_claude_runtime()
     attempt = {
         "attempt_id": attempt_id,
         "called_at": dt.datetime.now(dt.timezone.utc).isoformat(),
