@@ -62,26 +62,6 @@ SENSITIVE_READ_PATHS = (
     ".env",
     ".env.*",
 )
-CHILD_ENV_ALLOWLIST = {
-    "HOME",
-    "PATH",
-    "TMPDIR",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "SHELL",
-    "USER",
-    "LOGNAME",
-    "TERM",
-    "NO_COLOR",
-    "SSL_CERT_FILE",
-    "NODE_EXTRA_CA_CERTS",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-}
-
-
 class WorkerError(Exception):
     def __init__(
         self, message: str, code: int = DENY, failure_class: str | None = None
@@ -553,9 +533,11 @@ def verify_repository_state(repo: Path, request: dict[str, Any]) -> None:
 
 
 def permission_settings(request: dict[str, Any]) -> dict[str, Any]:
-    allow = [f"Read(/{scope})" for scope in request["read_paths"]]
+    # Claude Code routes built-in read tools through Read path rules. Broad
+    # Glob/Grep allow entries would defeat the signed repository scopes.
+    allow = [f"Read({scope})" for scope in request["read_paths"]]
     if request["role"] == "scoped_maker":
-        allow.extend(f"Edit(/{scope})" for scope in request["allowed_paths"])
+        allow.extend(f"Edit({scope})" for scope in request["allowed_paths"])
     deny = [
         "Bash",
         "WebFetch",
@@ -563,19 +545,24 @@ def permission_settings(request: dict[str, Any]) -> dict[str, Any]:
         "Agent",
         "Task",
         "NotebookEdit",
-        "Read(/.git/**)",
-        "Read(/.agent-state/**)",
-        "Read(/.claude/**)",
-        "Read(/CLAUDE.md)",
-        "Read(/**/CLAUDE.md)",
-        "Read(/.env)",
-        "Read(/.env.*)",
-        "Read(/**/.env)",
-        "Read(/**/.env.*)",
-        "Edit(/.git/**)",
-        "Edit(/.agent-state/**)",
-        "Edit(/.claude/**)",
-        "Edit(/.github/**)",
+        "Read(.git/**)",
+        "Read(.agent-state/**)",
+        "Read(.claude/**)",
+        "Read(CLAUDE.md)",
+        "Read(**/CLAUDE.md)",
+        "Read(.env)",
+        "Read(.env.*)",
+        "Read(**/.env)",
+        "Read(**/.env.*)",
+        "Read(~/.claude/**)",
+        "Read(~/.ssh/**)",
+        "Read(~/.aws/**)",
+        "Read(~/.config/gcloud/**)",
+        "Read(~/.kube/**)",
+        "Edit(.git/**)",
+        "Edit(.agent-state/**)",
+        "Edit(.claude/**)",
+        "Edit(.github/**)",
     ]
     return {
         "permissions": {
@@ -591,11 +578,7 @@ def permission_settings(request: dict[str, Any]) -> dict[str, Any]:
 
 def child_environment(config: dict[str, Any]) -> dict[str, str]:
     signing_key = config["controller"]["key_environment"]
-    return {
-        name: value
-        for name, value in os.environ.items()
-        if name in CHILD_ENV_ALLOWLIST and name != signing_key
-    }
+    return bridge.claude_child_environment(excluded={signing_key})
 
 
 def load_schema(path: Path, label: str) -> dict[str, Any]:
@@ -682,8 +665,6 @@ def claude_command(
         json.dumps(schema, separators=(",", ":")),
         "--tools",
         tools,
-        "--allowedTools",
-        *settings["permissions"]["allow"],
         "--settings",
         json.dumps(settings, separators=(",", ":")),
         "--strict-mcp-config",

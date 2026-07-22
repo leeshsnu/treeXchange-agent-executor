@@ -248,9 +248,12 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         self.assertNotIn("Edit", command[command.index("--tools") + 1])
         self.assertNotIn("Write", command[command.index("--tools") + 1])
         self.assertNotIn("--dangerously-skip-permissions", command)
+        self.assertNotIn("--allowedTools", command)
         settings = json.loads(command[command.index("--settings") + 1])
         self.assertIn("Bash", settings["permissions"]["deny"])
-        self.assertIn("Edit(/.git/**)", settings["permissions"]["deny"])
+        self.assertIn("Edit(.git/**)", settings["permissions"]["deny"])
+        self.assertIn("Read(services/model/**)", settings["permissions"]["allow"])
+        self.assertIn("Read(~/.claude/**)", settings["permissions"]["deny"])
         self.assertNotIn("Glob", settings["permissions"]["allow"])
         self.assertNotIn("Grep", settings["permissions"]["allow"])
         self.assertTrue(settings["sandbox"]["failIfUnavailable"])
@@ -265,7 +268,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         )
         settings = json.loads(command[command.index("--settings") + 1])
         self.assertIn(
-            "Edit(/services/model/HANDOFF_NEEDED.md)",
+            "Edit(services/model/HANDOFF_NEEDED.md)",
             settings["permissions"]["allow"],
         )
         self.assertIn("Bash", settings["permissions"]["deny"])
@@ -282,6 +285,8 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             "GH_TOKEN": "github-secret",
             "ANTHROPIC_API_KEY": "api-secret",
             "TREEXCHANGE_U2_CONTROLLER_KEY": SIGNING_KEY,
+            "HTTPS_PROXY": "https://proxy.invalid",
+            "SSL_CERT_FILE": "/tmp/intercept.pem",
         }
         with mock.patch.dict(worker.os.environ, values, clear=True):
             child = worker.child_environment(self.config)
@@ -289,6 +294,8 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         self.assertNotIn("GH_TOKEN", child)
         self.assertNotIn("ANTHROPIC_API_KEY", child)
         self.assertNotIn("TREEXCHANGE_U2_CONTROLLER_KEY", child)
+        self.assertNotIn("HTTPS_PROXY", child)
+        self.assertNotIn("SSL_CERT_FILE", child)
 
     def test_maker_allowed_change_is_machine_derived(self):
         with tempfile.TemporaryDirectory() as directory:

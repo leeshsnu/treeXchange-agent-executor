@@ -95,10 +95,12 @@ delegation tools to Claude. The exact Git diff is supplied as untrusted prompt
 evidence, and only schema-valid output is persisted. One owner-only ledger under
 the repository's shared Git metadata records call identity, reported usage, and
 verdict without storing prompt text. Every linked worktree resolves the same
-ledger and OS lock; legacy worktree-local ledgers are included in cap checks.
+ledger and OS lock; legacy worktree-local ledgers are included in cap checks and
+migrated into the shared ledger before a new attempt is recorded.
 Legacy ledgers must be owner-only regular files inside their exact worktree.
-Pre-identifier legacy calls receive a deterministic content identity and still
-consume budget; they are never silently discarded during migration.
+Pre-identifier legacy calls receive a deterministic source-position-and-content
+identity. Identical old records remain distinct, still consume budget, and are
+never silently discarded during migration.
 Claude stderr is classified in memory into a fixed non-secret failure category;
 raw stderr is neither printed nor persisted.
 Before a call reservation is created, the bridge verifies that its host process
@@ -140,8 +142,9 @@ argument.
 The deterministic controller authenticates each private work request with an
 independent key named by `TREEXCHANGE_U2_CONTROLLER_KEY`. That key is not a model
 credential and must also remain in an owner-only local secret store. The worker
-removes it, GitHub tokens and unrelated environment values before starting
-Claude. A request signature never authorizes activation: the protected U2 config
+removes it, GitHub tokens, proxy variables, extra CA bundles and unrelated
+environment values before starting Claude. A request signature never authorizes
+activation: the protected U2 config
 must separately be `approved_active`, and the current checked-in state is
 `proposed_paused` with `activation.enabled=false`. An active worker must also
 match its running commit to the user's external `U2_EXECUTOR_TRUSTED_SHA`; every
@@ -151,7 +154,13 @@ Tool permission is role-specific and deny-first. The read-only Reviewer cannot
 edit. The Maker can edit only signed, repository-relative low-risk paths in an
 already-created clean `claude/` worktree. Neither profile receives Bash, web,
 GitHub, MCP, plugin or subagent tools, and bypass/auto permission modes are
-disabled. Claude never receives the controller key or a GitHub write token.
+disabled. The CLI receives one available-tool list plus documented
+repository-relative Read/Edit permission rules; no second command-line allow
+surface is added. Claude never receives the controller key, a GitHub write
+token, proxy routing, or additional CA-bundle overrides.
+Activation requires a separate attended change and runtime permission probe
+against harmless allowed and denied sentinel files for the installed Claude Code
+version; static flag construction is not accepted as sufficient proof.
 
 Permission rules are backed by machine-derived postconditions. After the model
 returns, the wrapper rechecks the exact branch and commit, derives tracked and

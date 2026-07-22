@@ -91,6 +91,9 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
 - captures Claude stderr only in memory and persists a fixed failure category,
   never the raw error text, so authentication and usage-limit failures remain
   diagnosable without copying credential-bearing output into logs;
+- starts Claude with a shared minimal environment that retains only local
+  subscription login and basic process variables. Repository tokens, controller
+  keys, proxy routing and additional CA-bundle overrides are not inherited;
 - rejects credential-like or oversized evidence;
 - excludes checked-in `reviews/*.json` audit outputs from later model input so
   they cannot inflate or bias an independent follow-up review, while keeping
@@ -99,8 +102,8 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
   ledger under that repository's shared Git metadata, preventing private Season
   2 output from crossing into this public executor while making every linked
   worktree consume the same caps;
-- keeps the shared call ledger owner-only, counts pre-migration worktree-local
-  ledgers, records model attempts before invoking Claude, serializes
+- keeps the shared call ledger owner-only, migrates pre-migration worktree-local
+  calls into it before recording a new attempt, serializes
   reservations with an OS file lock, and refuses a duplicate
   model review of the same diff. One independent review per approved model is
   allowed for cross-model validation. Calls are bounded to 12 per work-item
@@ -122,8 +125,9 @@ duplicate-key JSON and schema drift are preserved as feedback but force
 local subscription-based U2 loop. It does not weaken or replace the no-tools U1
 review bridge. It defines two explicit execution profiles:
 
-- `repository_reviewer` receives `Read`, `Glob`, and `Grep` definitions. Read
-  approval is restricted to signed repository-relative scopes, shell, network,
+- `repository_reviewer` receives `Read`, `Glob`, and `Grep` definitions. Claude
+  Code permission rules use its documented repository-relative path syntax;
+  Read approval is restricted to signed scopes, shell, network,
   MCP, subagent and edit tools are denied, and any resulting worktree change
   quarantines the run.
 - `scoped_maker` is available only for the private Season 2 repository. It may
@@ -140,10 +144,19 @@ role, path set, model profile, turn cap and acceptance contract, and carries a
 single-use nonce plus signed pause-release and budget-reservation evidence.
 Requests and outputs stay owner-only under the target repository's ignored
 `.agent-state` directory. The call ledger stays owner-only under the repository's
-shared Git metadata so linked worktrees cannot create separate budgets. The Claude
-child process receives only a minimal environment; the controller key and
-GitHub credentials are removed while the local subscription OAuth credential
+shared Git metadata so linked worktrees cannot create separate budgets. Legacy
+calls receive stable source-position identities and are migrated into that
+shared ledger, so identical old records stay distinct and deleting an obsolete
+worktree cannot erase their budget use. The Claude child process receives only a
+minimal environment; controller and GitHub credentials, proxy variables and
+additional CA bundles are removed while the local subscription OAuth credential
 may be inherited.
+
+The worker remains paused until an attended activation change also proves the
+installed Claude Code version's effective Read, Glob, Grep, Edit, and Write
+permission behavior against harmless in-scope and out-of-scope sentinel files.
+Static command construction alone is not treated as proof of runtime permission
+semantics.
 
 The checked-in U2 config is `proposed_paused`. `verify-request` may prove that a
 signed request and clean worktree are coherent, but `run` denies before a model

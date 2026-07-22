@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,20 @@ MODEL_BY_TASK_PROFILE = {
     "design": ELEVATED_MODEL,
 }
 ALLOWED_MODELS = set(MODEL_BY_TASK_PROFILE.values())
+CLAUDE_CHILD_ENV_ALLOWLIST = {
+    "HOME",
+    "PATH",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SHELL",
+    "USER",
+    "LOGNAME",
+    "TERM",
+    "NO_COLOR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+}
 DISALLOWED_AUTH_ENV = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -247,33 +262,45 @@ def legacy_worktree_ledgers(repo: Path) -> list[Path]:
     return sorted(set(paths))
 
 
+def legacy_attempt_id(source: Path, index: int, call: dict[str, Any]) -> str:
+    source_digest = hashlib.sha256(str(source.resolve()).encode("utf-8")).hexdigest()
+    identity = {
+        "source_sha256": source_digest,
+        "source_index": index,
+        "call": call,
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return "legacy-" + digest
+
+
 def load_effective_ledger(path: Path, legacy_paths: tuple[Path, ...]) -> dict[str, Any]:
-    ledgers = [load_ledger(path)] + [load_ledger(item) for item in legacy_paths]
+    sources = [path, *legacy_paths]
     calls: list[dict[str, Any]] = []
     by_attempt: dict[str, dict[str, Any]] = {}
-    for ledger in ledgers:
-        for call in ledger["calls"]:
+    for source in sources:
+        ledger = load_ledger(source)
+        for index, call in enumerate(ledger["calls"]):
             if not isinstance(call, dict):
                 fail("Claude call ledger contains a malformed call")
-            attempt_id = call.get("attempt_id")
-            if isinstance(attempt_id, str) and attempt_id:
-                identity = "attempt:" + attempt_id
-            else:
-                legacy_digest = hashlib.sha256(
-                    json.dumps(
-                        call,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest()
-                identity = "legacy:" + legacy_digest
+            normalized = dict(call)
+            attempt_id = normalized.get("attempt_id")
+            if not isinstance(attempt_id, str) or not attempt_id:
+                attempt_id = legacy_attempt_id(source, index, normalized)
+                normalized["attempt_id"] = attempt_id
+            identity = "attempt:" + attempt_id
             previous = by_attempt.get(identity)
-            if previous is not None and previous != call:
+            if previous is not None and previous != normalized:
                 fail("Claude call ledgers disagree about one attempt")
             if previous is None:
-                by_attempt[identity] = call
-                calls.append(call)
+                by_attempt[identity] = normalized
+                calls.append(normalized)
     return {"schema_version": 1, "calls": calls}
 
 
@@ -285,7 +312,6 @@ def reserve_attempt(
     with locked_ledger(path):
         if attempt.get("requested_model") not in ALLOWED_MODELS:
             fail("Claude call reservation model is outside the approved allowlist", INVALID)
-        shared = load_ledger(path)
         ledger = load_effective_ledger(path, legacy_paths)
         if any(
             call.get("attempt_id") == attempt.get("attempt_id")
@@ -333,10 +359,10 @@ def reserve_attempt(
             for call in ledger["calls"]
         ):
             fail("this exact review diff and model have already consumed a Claude call")
-        shared["calls"].append(attempt)
-        save_private_json(path, shared)
+        ledger["calls"].append(attempt)
+        save_private_json(path, ledger)
         return {
-            "ledger_calls": len(ledger["calls"]) + 1,
+            "ledger_calls": len(ledger["calls"]),
             "window_calls": len(window_calls) + 1,
             "daily_calls": len(daily_calls) + 1,
         }
@@ -437,6 +463,19 @@ def require_local_subscription_auth() -> None:
         fail(
             "local Claude bridge refuses API-key, alternate-provider, or custom-endpoint environment"
         )
+
+
+def claude_child_environment(
+    source: Mapping[str, str] | None = None,
+    excluded: set[str] | None = None,
+) -> dict[str, str]:
+    values = os.environ if source is None else source
+    blocked = set() if excluded is None else excluded
+    return {
+        name: value
+        for name, value in values.items()
+        if name in CLAUDE_CHILD_ENV_ALLOWLIST and name not in blocked
+    }
 
 
 def require_local_claude_runtime(home: Path | None = None) -> None:
@@ -542,6 +581,7 @@ def invoke_claude(
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=claude_child_environment(),
             timeout=timeout_seconds,
             check=False,
         )

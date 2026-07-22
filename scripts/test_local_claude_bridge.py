@@ -87,7 +87,15 @@ class BridgeTests(unittest.TestCase):
             stdout=json.dumps({"is_error": False, "structured_output": structured}),
             stderr="",
         )
-        with mock.patch.dict(bridge.os.environ, {}, clear=True):
+        with mock.patch.dict(
+            bridge.os.environ,
+            {
+                "HOME": "/tmp/home",
+                "HTTPS_PROXY": "https://proxy.invalid",
+                "GH_TOKEN": "github-secret",
+            },
+            clear=True,
+        ):
             with mock.patch.object(bridge.subprocess, "run", return_value=completed) as run:
                 result = bridge.invoke_claude("bounded", {"type": "object"}, 60)
         command = run.call_args.args[0]
@@ -101,7 +109,34 @@ class BridgeTests(unittest.TestCase):
         self.assertIn("--append-system-prompt", command)
         self.assertNotIn("--system-prompt", command)
         self.assertNotIn("--allowedTools", command)
+        child = run.call_args.kwargs["env"]
+        self.assertEqual(child["HOME"], "/tmp/home")
+        self.assertNotIn("HTTPS_PROXY", child)
+        self.assertNotIn("GH_TOKEN", child)
         self.assertEqual(result["result"]["verdict"], "APPROVE")
+
+    def test_claude_child_environment_strips_proxy_certificates_and_repo_tokens(self):
+        source = {
+            "HOME": "/tmp/home",
+            "PATH": "/usr/bin",
+            "CLAUDE_CODE_OAUTH_TOKEN": "subscription-oauth",
+            "HTTPS_PROXY": "https://proxy.invalid",
+            "HTTP_PROXY": "http://proxy.invalid",
+            "SSL_CERT_FILE": "/tmp/intercept.pem",
+            "NODE_EXTRA_CA_CERTS": "/tmp/intercept.pem",
+            "GH_TOKEN": "github-secret",
+        }
+        child = bridge.claude_child_environment(source)
+        self.assertEqual(child["CLAUDE_CODE_OAUTH_TOKEN"], "subscription-oauth")
+        self.assertEqual(child["HOME"], "/tmp/home")
+        for name in (
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "SSL_CERT_FILE",
+            "NODE_EXTRA_CA_CERTS",
+            "GH_TOKEN",
+        ):
+            self.assertNotIn(name, child)
 
     def test_api_key_or_custom_endpoint_environment_is_rejected(self):
         for variable in bridge.DISALLOWED_AUTH_ENV:
@@ -309,6 +344,39 @@ class BridgeTests(unittest.TestCase):
             fable["requested_model"] = bridge.ELEVATED_MODEL
             with self.assertRaisesRegex(bridge.BridgeError, "diff and model"):
                 bridge.reserve_attempt(ledger, fable)
+
+    def test_identical_pre_identifier_calls_remain_distinct(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            call = ledger_attempt(1)
+            call.pop("attempt_id")
+            bridge.save_private_json(
+                ledger, {"schema_version": 1, "calls": [call, dict(call)]}
+            )
+            effective = bridge.load_effective_ledger(ledger, ())
+            self.assertEqual(len(effective["calls"]), 2)
+            self.assertEqual(
+                len({item["attempt_id"] for item in effective["calls"]}), 2
+            )
+
+    def test_legacy_calls_are_migrated_into_shared_ledger(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shared = root / "shared.json"
+            legacy = root / "legacy.json"
+            old_call = ledger_attempt(1)
+            old_call.pop("attempt_id")
+            bridge.save_private_json(
+                legacy, {"schema_version": 1, "calls": [old_call]}
+            )
+            first = bridge.reserve_attempt(shared, ledger_attempt(2), (legacy,))
+            self.assertEqual(first["ledger_calls"], 2)
+            second = bridge.reserve_attempt(shared, ledger_attempt(3), (legacy,))
+            self.assertEqual(second["ledger_calls"], 3)
+            legacy.unlink()
+            third = bridge.reserve_attempt(shared, ledger_attempt(4))
+            self.assertEqual(third["ledger_calls"], 4)
+            self.assertEqual(len(bridge.load_ledger(shared)["calls"]), 4)
 
     def test_concurrent_duplicate_reservation_allows_exactly_one_call(self):
         with tempfile.TemporaryDirectory() as directory:
