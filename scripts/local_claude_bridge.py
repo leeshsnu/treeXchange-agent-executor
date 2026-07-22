@@ -209,6 +209,16 @@ def reserve_attempt(path: Path, attempt: dict[str, Any]) -> dict[str, int]:
         if attempt.get("requested_model") not in ALLOWED_MODELS:
             fail("Claude call reservation model is outside the approved allowlist", INVALID)
         ledger = load_ledger(path)
+        if any(
+            call.get("attempt_id") == attempt.get("attempt_id")
+            for call in ledger["calls"]
+        ):
+            fail("Claude call attempt id has already been consumed")
+        if attempt.get("request_nonce") is not None and any(
+            call.get("request_nonce") == attempt.get("request_nonce")
+            for call in ledger["calls"]
+        ):
+            fail("signed Claude work-request nonce has already been consumed")
         called_day = attempt["called_at"][:10]
         daily_calls = [
             call for call in ledger["calls"]

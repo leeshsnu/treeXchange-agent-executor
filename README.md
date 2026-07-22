@@ -107,6 +107,43 @@ and passes the same strict review schema. Prose, Markdown, surrounding text,
 duplicate-key JSON and schema drift are preserved as feedback but force
 `CHANGES_REQUESTED`; unstructured output can never authorize continuation.
 
+## Proposed U2 local role workers
+
+`scripts/local_claude_worker.py` is a separate, still-paused foundation for the
+local subscription-based U2 loop. It does not weaken or replace the no-tools U1
+review bridge. It defines two explicit execution profiles:
+
+- `repository_reviewer` receives `Read`, `Glob`, and `Grep` definitions. Read
+  approval is restricted to signed repository-relative scopes, shell, network,
+  MCP, subagent and edit tools are denied, and any resulting worktree change
+  quarantines the run.
+- `scoped_maker` is available only for the private Season 2 repository. It may
+  read signed scopes and edit signed exact low-risk files with `Read`, `Glob`,
+  `Grep`, `Edit`, and `Write`. Shell, network, Git, GitHub, MCP, subagent and protected
+  policy paths remain unavailable. The wrapper rejects out-of-scope changes,
+  symlinks, binary or oversized changes, credential-shaped content, commit or
+  branch drift, incomplete `BLOCKED` edits, and model path claims that differ
+  from machine-derived Git evidence.
+
+Every work request is complete, expires within 24 hours, is HMAC-signed by the
+deterministic controller, names one exact repository, branch, Base, target Head,
+role, path set, model profile, turn cap and acceptance contract, and carries a
+single-use nonce plus signed pause-release and budget-reservation evidence.
+Requests, outputs and the shared call ledger stay owner-only under the target
+repository's ignored `.agent-state` directory. The Claude
+child process receives only a minimal environment; the controller key and
+GitHub credentials are removed while the local subscription OAuth credential
+may be inherited.
+
+The checked-in U2 config is `proposed_paused`. `verify-request` may prove that a
+signed request and clean worktree are coherent, but `run` denies before a model
+call until a separately reviewed exact executor SHA is installed in
+`U2_EXECUTOR_TRUSTED_SHA` and matches the running commit, and the controller key,
+pause release, budget and activation packet are approved. The worker never
+commits, pushes, opens a PR, merges, deploys or clears a pause. Those remain
+deterministic controller responsibilities after machine-derived postconditions
+pass.
+
 ## OMC collaboration lane
 
 OMC is the trusted, human-readable collaboration runtime for planning,

@@ -115,6 +115,46 @@ blocks that Gate while unrelated authorized work can continue. An exact diff
 may consume at most one call per approved model, allowing a bounded Fable 5 and
 Opus 4.8 cross-review while still denying repeated calls to either model.
 
+## Proposed U2 local worker boundary
+
+The proposed U2 local worker uses the user's Claude subscription OAuth on the
+same logged-in Mac. It refuses Anthropic API-key, custom endpoint and alternate
+cloud-provider overrides. A future long-lived `CLAUDE_CODE_OAUTH_TOKEN`, if the
+user chooses to generate one with `claude setup-token`, must remain in macOS
+Keychain or an equivalent owner-only local secret store. It must never be put in
+the public repository, a request, output, ledger, log, Issue, PR or command
+argument.
+
+The deterministic controller authenticates each private work request with an
+independent key named by `TREEXCHANGE_U2_CONTROLLER_KEY`. That key is not a model
+credential and must also remain in an owner-only local secret store. The worker
+removes it, GitHub tokens and unrelated environment values before starting
+Claude. A request signature never authorizes activation: the protected U2 config
+must separately be `approved_active`, and the current checked-in state is
+`proposed_paused` with `activation.enabled=false`. An active worker must also
+match its running commit to the user's external `U2_EXECUTOR_TRUSTED_SHA`; every
+signed request binds distinct pause-release and budget-reservation evidence.
+
+Tool permission is role-specific and deny-first. The read-only Reviewer cannot
+edit. The Maker can edit only signed, repository-relative low-risk paths in an
+already-created clean `claude/` worktree. Neither profile receives Bash, web,
+GitHub, MCP, plugin or subagent tools, and bypass/auto permission modes are
+disabled. Claude never receives the controller key or a GitHub write token.
+
+Permission rules are backed by machine-derived postconditions. After the model
+returns, the wrapper rechecks the exact branch and commit, derives tracked and
+untracked paths from Git, scans bounded UTF-8 content for credential patterns,
+rejects symlinks and compares the actual path set to the signed scope and model
+claim. Failure leaves the isolated worktree quarantined; it never triggers an
+automatic reset, commit, push or publication. Reviewer writes, Maker path drift,
+history drift and partial edits behind a `BLOCKED` status are all denial states.
+
+The first U2 activation remains limited to low-risk Season 2 Maker work and
+read-only review. The public executor repository itself is never writable by the
+Claude Maker profile. Protected policy, governance, workflow, control-plane,
+production, customer-data, deployment, spend and public-claim work remain
+outside this lane and require their existing attended Gate.
+
 ## Residual administrative risk
 
 The repository owner is also its administrator. Branch and environment

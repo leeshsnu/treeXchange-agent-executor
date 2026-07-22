@@ -231,6 +231,22 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, "allowlist"):
                 bridge.reserve_attempt(ledger, attempt)
 
+    def test_attempt_id_and_signed_request_nonce_are_single_use(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            first = ledger_attempt(1)
+            first["request_nonce"] = "1" * 32
+            bridge.reserve_attempt(ledger, first)
+            repeated_id = ledger_attempt(2)
+            repeated_id["attempt_id"] = first["attempt_id"]
+            repeated_id["request_nonce"] = "2" * 32
+            with self.assertRaisesRegex(bridge.BridgeError, "attempt id"):
+                bridge.reserve_attempt(ledger, repeated_id)
+            repeated_nonce = ledger_attempt(3)
+            repeated_nonce["request_nonce"] = first["request_nonce"]
+            with self.assertRaisesRegex(bridge.BridgeError, "nonce"):
+                bridge.reserve_attempt(ledger, repeated_nonce)
+
     def test_legacy_duplicate_without_model_remains_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Path(directory) / ".agent-state" / "ledger.json"
