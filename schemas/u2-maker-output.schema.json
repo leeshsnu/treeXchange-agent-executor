@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://treexchange.local/schemas/u2-maker-output.schema.json",
+  "title": "treeXchange U2 Claude Maker result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "changed_paths_claimed",
+    "verification_requested",
+    "residual_risk",
+    "decision_required"
+  ],
+  "properties": {
+    "status": {"enum": ["DONE", "BLOCKED"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "changed_paths_claimed": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"type": "string", "minLength": 1, "maxLength": 240}
+    },
+    "verification_requested": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    },
+    "residual_risk": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    },
+    "decision_required": {
+      "type": ["string", "null"],
+      "maxLength": 1000
+    }
+  }
+}

@@ -5,8 +5,11 @@ export PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/treexchange-executor-pycache"
 
 python3 -m json.tool config/u1-executor.json >/dev/null
 python3 -m json.tool config/u1-maker.json >/dev/null
+python3 -m json.tool config/u2-local-worker.json >/dev/null
 python3 -m json.tool schemas/u1-review-output.schema.json >/dev/null
 python3 -m json.tool schemas/u1-maker-output.schema.json >/dev/null
+python3 -m json.tool schemas/u2-local-work-request.schema.json >/dev/null
+python3 -m json.tool schemas/u2-maker-output.schema.json >/dev/null
 for review in reviews/*.json; do
   python3 -m json.tool "$review" >/dev/null
 done
@@ -14,16 +17,34 @@ python3 -m py_compile \
   scripts/u1_executor.py \
   scripts/u1_maker.py \
   scripts/local_claude_bridge.py \
+  scripts/local_claude_worker.py \
+  scripts/scoped_repository_mcp.py \
   scripts/test_u1_executor.py \
   scripts/test_u1_maker.py \
-  scripts/test_local_claude_bridge.py
+  scripts/test_local_claude_bridge.py \
+  scripts/test_local_claude_worker.py \
+  scripts/test_scoped_repository_mcp.py
 python3 -m unittest -v \
   scripts/test_u1_executor.py \
   scripts/test_u1_maker.py \
-  scripts/test_local_claude_bridge.py
+  scripts/test_local_claude_bridge.py \
+  scripts/test_local_claude_worker.py \
+  scripts/test_scoped_repository_mcp.py
 ruby -e 'require "yaml"; Dir[".github/workflows/*.{yml,yaml}"].each { |path| YAML.parse_file(path) }'
 python3 scripts/u1_executor.py validate-config
 python3 scripts/u1_maker.py validate-config
+python3 scripts/local_claude_worker.py validate-config
+
+if grep -n -- '--dangerously-skip-permissions' scripts/local_claude_worker.py; then
+  echo "U2 local worker must never bypass Claude Code permissions" >&2
+  exit 1
+fi
+
+if ! grep -n -- '"--tools",' scripts/local_claude_worker.py >/dev/null || \
+   ! grep -n -- '"",' scripts/local_claude_worker.py >/dev/null; then
+  echo "U2 local worker must disable Claude built-in tools" >&2
+  exit 1
+fi
 
 if grep -RInE 'uses:[[:space:]]+[^#[:space:]]+@(main|master|v[0-9]+|beta|latest)([[:space:]#]|$)' .github/workflows; then
   echo "workflow action references must use immutable SHAs" >&2

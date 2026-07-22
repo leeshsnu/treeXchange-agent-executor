@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "status": "proposed_paused",
+  "activation": {
+    "enabled": false,
+    "trusted_sha_environment": "U2_EXECUTOR_TRUSTED_SHA",
+    "requires_controller_signature": true,
+    "requires_control_release_id": true,
+    "requires_budget_reservation_id": true
+  },
+  "controller": {
+    "key_id": "u2-controller-v1",
+    "key_environment": "TREEXCHANGE_U2_CONTROLLER_KEY",
+    "minimum_key_bytes": 32
+  },
+  "repositories": [
+    "leeshsnu/treeXchange-agent-executor",
+    "leeshsnu/treeXchange-season2"
+  ],
+  "roles": {
+    "repository_reviewer": {
+      "repositories": [
+        "leeshsnu/treeXchange-agent-executor",
+        "leeshsnu/treeXchange-season2"
+      ],
+      "tools": ["read_diff", "read_file", "list_files", "search_text"],
+      "may_write_source": false,
+      "may_run_shell": false,
+      "may_use_network_tools": false
+    },
+    "scoped_maker": {
+      "repositories": ["leeshsnu/treeXchange-season2"],
+      "tools": ["read_file", "list_files", "search_text", "write_file", "replace_text"],
+      "may_write_source": true,
+      "may_run_shell": false,
+      "may_use_network_tools": false
+    }
+  },
+  "limits": {
+    "maximum_prompt_bytes": 60000,
+    "maximum_diff_bytes": 180000,
+    "maximum_turns": 8,
+    "maximum_minutes": 20,
+    "maximum_allowed_paths": 16,
+    "maximum_read_paths": 24,
+    "maximum_acceptance_criteria": 12
+  },
+  "blocked_maker_paths": [
+    ".git/**",
+    ".agent-state/**",
+    ".claude/**",
+    ".github/**",
+    "config/**",
+    "ops/**",
+    "docs/governance/**"
+  ],
+  "git": {
+    "required_branch_prefix": "claude/",
+    "require_clean_start": true,
+    "forbid_commit_during_model_run": true,
+    "forbid_push": true,
+    "forbid_merge": true
+  }
+}
