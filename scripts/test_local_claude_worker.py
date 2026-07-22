@@ -237,6 +237,32 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "credential paths"):
             worker.validate_request(request, self.config, NOW)
 
+    def test_protected_control_context_is_denied_for_both_roles(self):
+        for role in ("repository_reviewer", "scoped_maker"):
+            for path in (
+                ".github/workflows/ci.yml",
+                "config/u2-local-worker.json",
+                "ops/runbook.md",
+                "docs/governance/status.md",
+            ):
+                with self.subTest(role=role, path=path):
+                    request = work_request(role)
+                    request["read_paths"] = [path]
+                    if role == "scoped_maker":
+                        request["allowed_paths"] = ["services/model/HANDOFF_NEEDED.md"]
+                    request = sign_request(request)
+                    with self.assertRaisesRegex(worker.WorkerError, "credential paths"):
+                        worker.validate_request(request, self.config, NOW)
+
+    def test_reviewer_can_use_exact_diff_without_repository_context_reads(self):
+        request = work_request("repository_reviewer")
+        request["read_paths"] = []
+        request = sign_request(request)
+        validated = worker.validate_request(request, self.config, NOW)
+        self.assertEqual(validated["read_paths"], [])
+        prompt = worker.reviewer_prompt(validated, "a" * 64, 123)
+        self.assertIn("None; exact diff only", prompt)
+
     def test_reviewer_tools_are_repository_read_only(self):
         request = worker.validate_request(
             work_request("repository_reviewer"), self.config, NOW
@@ -456,6 +482,25 @@ class LocalClaudeWorkerTests(unittest.TestCase):
                 "status": "DONE",
                 "summary": "Changed the handoff.",
                 "changed_paths_claimed": ["services/model/HANDOFF_NEEDED.md"],
+                "verification_requested": [],
+                "residual_risk": [],
+                "decision_required": None,
+            }
+            with self.assertRaisesRegex(worker.WorkerError, "UTF-8 text"):
+                worker.validate_postconditions(repository.root, request, self.config, result)
+
+    def test_maker_untracked_binary_change_is_quarantined(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = GitRepository(directory)
+            request = repository.maker_request()
+            request["allowed_paths"] = ["services/model/NEW.md"]
+            request["read_paths"] = ["services/model/**"]
+            target = repository.root / "services/model/NEW.md"
+            target.write_bytes(b"\x00\x01\x02")
+            result = {
+                "status": "DONE",
+                "summary": "Created a file.",
+                "changed_paths_claimed": ["services/model/NEW.md"],
                 "verification_requested": [],
                 "residual_risk": [],
                 "decision_required": None,

@@ -105,9 +105,10 @@ Claude stderr is classified in memory into a fixed non-secret failure category;
 raw stderr is neither printed nor persisted.
 Before a call reservation is created, the bridge verifies that its host process
 can create and remove an owner-only probe in the default Claude Code debug-state
-directory. Claude Code requires that local state for startup and authentication.
-Granting the wrapper access to its own Claude state is distinct from model tool
-authority: the review child still receives no file, shell, web, MCP, plugin or
+directory used by the installed CLI. This is a fail-fast compatibility check,
+not a product-wide claim that every Claude Code installation requires that
+exact path. Granting the wrapper access to its own Claude state is distinct from
+model tool authority: the review child still receives no file, shell, web, MCP, plugin or
 delegation tools. A denied local state directory fails as
 `local_filesystem_denied` without consuming a model-call reservation.
 Checked-in `reviews/*.json` outputs remain Git audit evidence but are excluded
@@ -156,8 +157,10 @@ admits only the pinned local `scoped_repository_mcp.py` server; no third-party o
 network MCP server is loaded. The read-only Reviewer receives one exact
 Base-to-Head diff operation plus three scoped repository-read operations. The
 diff is returned as untrusted tool evidence instead of being embedded in the
-authority-bearing prompt. The Maker adds two write operations that accept only signed exact
-low-risk files in an already-created clean `claude/` worktree. The server
+authority-bearing prompt. Full-file reads under workflow, config, operations
+and governance control paths are denied; a Reviewer can see changes there only
+as exact signed diff hunks. The Maker adds two write operations that accept only
+signed exact low-risk files in an already-created clean `claude/` worktree. The server
 revalidates canonical repository containment, signed scope, sensitive paths,
 tracked-file inventory, links, byte limits, UTF-8 and credential patterns for
 every call. A fixed trusted `git ls-files` subprocess builds the inventory;

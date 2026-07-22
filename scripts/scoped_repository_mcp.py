@@ -23,6 +23,7 @@ COMMON_READ_TOOLS = ("read_file", "list_files", "search_text")
 REVIEW_TOOLS = ("read_diff",) + COMMON_READ_TOOLS
 WRITE_TOOLS = ("write_file", "replace_text")
 SENSITIVE_PARTS = {".git", ".agent-state", ".claude", ".ssh", ".aws", ".kube"}
+PROTECTED_CONTEXT_SCOPES = (".github", "config", "ops", "docs/governance")
 MAX_LISTED_FILES = 500
 MAX_SEARCH_MATCHES = 100
 MAX_SEARCH_BYTES = 1_000_000
@@ -53,12 +54,20 @@ def path_matches(path: str, scope: str) -> bool:
     return path == scope
 
 
-def sensitive_path(relative: str) -> bool:
+def private_path(relative: str) -> bool:
     parts = tuple(part.lower() for part in PurePosixPath(relative).parts)
     return (
         any(part in SENSITIVE_PARTS for part in parts)
         or any(part == ".env" or part.startswith(".env.") for part in parts)
         or any(part == "claude.md" for part in parts)
+    )
+
+
+def sensitive_path(relative: str) -> bool:
+    lowered = relative.lower()
+    return private_path(relative) or any(
+        lowered == scope or lowered.startswith(scope + "/")
+        for scope in PROTECTED_CONTEXT_SCOPES
     )
 
 
@@ -88,7 +97,7 @@ class RepositoryTools:
         self.target_sha = target_sha
         self.diff_scopes = tuple(diff_scopes or [])
         self.max_diff_bytes = max_diff_bytes
-        if not self.read_scopes or max_file_bytes <= 0:
+        if (role == "scoped_maker" and not self.read_scopes) or max_file_bytes <= 0:
             raise ScopeError("scoped tool policy is incomplete")
         for scope in [*self.read_scopes, *self.write_paths, *self.diff_scopes]:
             raw = scope[:-3] if scope.endswith("/**") else scope
@@ -168,7 +177,7 @@ class RepositoryTools:
         except UnicodeDecodeError as error:
             raise ScopeError("review diff paths must be UTF-8") from error
         if not changed or any(
-            sensitive_path(path)
+            private_path(path)
             or not any(path_matches(path, scope) for scope in self.diff_scopes)
             for path in changed
         ):
@@ -327,14 +336,9 @@ class RepositoryTools:
             if not isinstance(query, str) or not query or len(query) > 200:
                 raise ScopeError("search query is outside the bounded contract")
             matches: list[dict[str, Any]] = []
-            skipped_paths: list[str] = []
             consumed = 0
             for relative in self._files():
-                try:
-                    _, content = self._read(relative)
-                except ScopeError:
-                    skipped_paths.append(relative)
-                    continue
+                _, content = self._read(relative)
                 consumed += len(content.encode("utf-8"))
                 if consumed > MAX_SEARCH_BYTES:
                     raise ScopeError("search input exceeds the cumulative byte cap")
@@ -344,16 +348,8 @@ class RepositoryTools:
                             {"path": relative, "line": line_number, "text": line[:500]}
                         )
                         if len(matches) >= MAX_SEARCH_MATCHES:
-                            return {
-                                "matches": matches,
-                                "truncated": True,
-                                "skipped_paths": skipped_paths,
-                            }
-            return {
-                "matches": matches,
-                "truncated": False,
-                "skipped_paths": skipped_paths,
-            }
+                            return {"matches": matches, "truncated": True}
+            return {"matches": matches, "truncated": False}
         if name == "write_file":
             return self._write(arguments.get("path"), arguments.get("content"))
         if name == "replace_text":

@@ -79,9 +79,10 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
   custom-endpoint environment overrides so the local path uses the default
   Claude Code subscription login;
 - verifies, before reserving a call, that the invoking host process can create
-  and remove an owner-only probe in Claude Code's required local debug-state
-  directory. This host-runtime access is necessary for CLI startup and does not
-  grant Claude any repository, shell, web, MCP, plugin, or delegation tool;
+  and remove an owner-only probe in the default local debug-state directory used
+  by the installed Claude Code CLI. This is a fail-fast host compatibility
+  check, not a claim about every Claude Code installation, and it does not grant
+  Claude any repository, shell, web, MCP, plugin, or delegation tool;
 - routes standard implementation and review work to `claude-opus-4-8`, while
   advanced refinement, strategic insight, and design profiles use
   `claude-fable-5` with Opus 4.8 as their only fallback;
@@ -130,9 +131,12 @@ review bridge. It defines two explicit execution profiles:
   embedded in the authority-bearing prompt: `read_diff` derives it from the
   signed exact Base and Head, rechecks the signed changed-path scope and returns
   it as untrusted tool evidence with a trusted digest. Claude's built-in file
-  tools are disabled. The local tool server enforces signed repository-relative
-  scopes on every call; shell, network, third-party MCP, subagent and edit tools
-  are unavailable, and any resulting worktree change quarantines the run.
+  tools are disabled. Full-file context under workflow, config, operations and
+  governance control paths remains unavailable; only exact signed diff hunks
+  may include changes there. The local tool server enforces signed
+  repository-relative scopes on every call; shell, network, third-party MCP,
+  subagent and edit tools are unavailable, and any resulting worktree change
+  quarantines the run.
 - `scoped_maker` is available only for the private Season 2 repository. It may
   inspect signed scopes with the same three local tools and receives
   `write_file` and `replace_text` only for signed exact low-risk files. The
@@ -151,8 +155,8 @@ deterministic controller, names one exact repository, branch, Base, target Head,
 role, path set, model profile, turn cap and acceptance contract, and carries a
 single-use nonce plus signed pause-release and budget-reservation evidence.
 The nonce, request id and budget-reservation id are each consumed once in the
-shared ledger. Requests and outputs stay owner-only under the target repository's ignored
-`.agent-state` directory. The call ledger stays owner-only under the repository's
+shared ledger. Requests and outputs stay owner-only under the target repository's
+ignored `.agent-state` directory. The call ledger stays owner-only under the repository's
 shared Git metadata so linked worktrees cannot create separate budgets. Legacy
 calls receive stable source-position identities and are migrated into that
 shared ledger, so identical old records stay distinct and deleting an obsolete

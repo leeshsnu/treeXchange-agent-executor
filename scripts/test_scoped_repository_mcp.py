@@ -26,11 +26,14 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
         self.repo = Path(self.temporary.name)
         target = self.repo / "services/model"
         target.mkdir(parents=True)
+        config = self.repo / "config"
+        config.mkdir()
         (target / "README.md").write_text("alpha\nneedle here\n", encoding="utf-8")
         (target / "HANDOFF.md").write_text("initial\n", encoding="utf-8")
         (target / ".env.local").write_text("PRIVATE=value\n", encoding="utf-8")
         (target / "CLAUDE.md").write_text("untrusted instructions\n", encoding="utf-8")
         (self.repo / "OUTSIDE.md").write_text("outside\n", encoding="utf-8")
+        (config / "policy.json").write_text('{"mode":"paused"}\n', encoding="utf-8")
         subprocess.run(["git", "init", "-b", "main"], cwd=self.repo, check=True, capture_output=True)
         subprocess.run(
             ["git", "config", "user.name", "MCP Test"],
@@ -54,7 +57,11 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
             capture_output=True, check=True,
         ).stdout.strip()
         (target / "HANDOFF.md").write_text("reviewed\n", encoding="utf-8")
-        subprocess.run(["git", "add", "services/model/HANDOFF.md"], cwd=self.repo, check=True)
+        (config / "policy.json").write_text('{"mode":"reviewed"}\n', encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "services/model/HANDOFF.md", "config/policy.json"],
+            cwd=self.repo, check=True,
+        )
         subprocess.run(
             ["git", "commit", "-m", "review fixture"], cwd=self.repo,
             check=True, capture_output=True,
@@ -76,7 +83,7 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
             100_000,
             self.base,
             self.head,
-            ["services/model/HANDOFF.md"],
+            ["services/model/HANDOFF.md", "config/policy.json"],
             100_000,
         )
 
@@ -105,6 +112,7 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
         self.assertEqual(evidence["base_sha"], self.base)
         self.assertEqual(evidence["target_sha"], self.head)
         self.assertIn("+reviewed", evidence["content"])
+        self.assertIn('"mode":"reviewed"', evidence["content"])
         self.assertRegex(evidence["sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(evidence["bytes"], len(evidence["content"].encode()))
         with self.assertRaises(mcp.ScopeError):
@@ -131,6 +139,37 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
                     tools.call("read_file", {"path": path})
         for path in ("SERVICES/.ENV.LOCAL", "services/model/claude.md", ".GIT/config"):
             self.assertTrue(mcp.sensitive_path(path))
+        for path in (
+            ".github/workflows/ci.yml",
+            "config/policy.json",
+            "ops/runbook.md",
+            "docs/governance/status.md",
+        ):
+            self.assertTrue(mcp.sensitive_path(path))
+            tools = mcp.RepositoryTools(
+                self.repo,
+                "repository_reviewer",
+                [path],
+                [],
+                100_000,
+                self.base,
+                self.head,
+                ["services/model/HANDOFF.md", "config/policy.json"],
+                100_000,
+            )
+            with self.assertRaises(mcp.ScopeError):
+                tools.call("read_file", {"path": path})
+
+    def test_search_fails_closed_when_a_listed_file_cannot_be_read(self):
+        credential = self.repo / "services/model/CREDENTIAL.txt"
+        credential.write_text("github_pat_" + "A" * 30, encoding="utf-8")
+        subprocess.run(["git", "add", str(credential)], cwd=self.repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "credential fixture"], cwd=self.repo,
+            check=True, capture_output=True,
+        )
+        with self.assertRaisesRegex(mcp.ScopeError, "resembles a credential"):
+            self.maker().call("search_text", {"query": "absent"})
 
     def test_symlink_escape_is_denied(self):
         outside = Path(self.temporary.name).parent / "mcp-outside.txt"
@@ -237,7 +276,7 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
                 "--target-sha",
                 self.head,
                 "--diff-scopes",
-                '["services/model/HANDOFF.md"]',
+                '["services/model/HANDOFF.md","config/policy.json"]',
                 "--max-diff-bytes",
                 "100000",
             ],

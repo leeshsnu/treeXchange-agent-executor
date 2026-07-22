@@ -487,7 +487,7 @@ def claude_child_environment(
 
 
 def require_local_claude_runtime(home: Path | None = None) -> None:
-    """Verify Claude can write its private runtime state before reserving a call."""
+    """Fail fast when the installed CLI's default private state is unusable."""
     require_local_subscription_auth()
     debug_dir = (home if home is not None else Path.home()) / ".claude" / "debug"
     probe = debug_dir / f".treexchange-preflight-{uuid.uuid4().hex}"
