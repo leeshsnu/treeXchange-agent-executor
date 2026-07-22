@@ -78,6 +78,15 @@ SENSITIVE_READ_PATHS = (
     "ops/**",
     "docs/governance/**",
 )
+EXPECTED_BLOCKED_MAKER_PATHS = [
+    ".git/**",
+    ".agent-state/**",
+    ".claude/**",
+    ".github/**",
+    "config/**",
+    "ops/**",
+    "docs/governance/**",
+]
 
 
 class WorkerError(Exception):
@@ -180,7 +189,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
     if value.get("repositories") != sorted(bridge.ALLOWED_REPOSITORIES):
         fail("U2 repository allowlist drifted from the local bridge", INVALID)
     blocked = value.get("blocked_maker_paths")
-    if not isinstance(blocked, list) or not blocked or any(
+    if blocked != EXPECTED_BLOCKED_MAKER_PATHS or any(
         normalize_scope_path(item, "blocked_maker_paths") != item for item in blocked
     ):
         fail("U2 protected Maker path contract is invalid", INVALID)

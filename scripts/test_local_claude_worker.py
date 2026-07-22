@@ -129,6 +129,15 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "proposed and paused"):
             worker.require_activation(self.config)
 
+    def test_protected_path_config_cannot_be_weakened(self):
+        weakened = copy.deepcopy(self.config)
+        weakened["blocked_maker_paths"].remove("config/**")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(weakened), encoding="utf-8")
+            with self.assertRaisesRegex(worker.WorkerError, "protected Maker path"):
+                worker.load_config(path)
+
     def test_future_activation_requires_user_trusted_exact_running_sha(self):
         active = copy.deepcopy(self.config)
         active["status"] = "approved_active"
