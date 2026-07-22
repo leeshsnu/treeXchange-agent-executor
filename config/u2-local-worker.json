@@ -23,7 +23,7 @@
         "leeshsnu/treeXchange-agent-executor",
         "leeshsnu/treeXchange-season2"
       ],
-      "tools": ["read_file", "list_files", "search_text"],
+      "tools": ["read_diff", "read_file", "list_files", "search_text"],
       "may_write_source": false,
       "may_run_shell": false,
       "may_use_network_tools": false

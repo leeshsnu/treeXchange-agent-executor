@@ -39,6 +39,7 @@ def ledger_attempt(index, *, work_item="OPS-03", window="ops-03-window-01", day=
         "requested_model": bridge.DEFAULT_MODEL,
         "work_item_id": work_item,
         "review_window": window,
+        "budget_reservation_id": f"budget-{index}",
         "status": "started",
     }
 
@@ -164,6 +165,18 @@ class BridgeTests(unittest.TestCase):
                 ):
                     with self.assertRaises(bridge.BridgeError) as raised:
                         bridge.require_local_claude_runtime(Path(directory))
+            self.assertEqual(
+                raised.exception.failure_class, "local_filesystem_denied"
+            )
+
+    def test_local_runtime_preflight_rejects_non_private_existing_debug_dir(self):
+        with tempfile.TemporaryDirectory() as directory:
+            debug_dir = Path(directory) / ".claude" / "debug"
+            debug_dir.mkdir(parents=True)
+            debug_dir.chmod(0o777)
+            with mock.patch.dict(bridge.os.environ, {}, clear=True):
+                with self.assertRaises(bridge.BridgeError) as raised:
+                    bridge.require_local_claude_runtime(Path(directory))
             self.assertEqual(
                 raised.exception.failure_class, "local_filesystem_denied"
             )
@@ -334,6 +347,16 @@ class BridgeTests(unittest.TestCase):
             repeated_nonce["request_nonce"] = first["request_nonce"]
             with self.assertRaisesRegex(bridge.BridgeError, "nonce"):
                 bridge.reserve_attempt(ledger, repeated_nonce)
+
+    def test_signed_budget_reservation_is_single_use_across_request_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".agent-state" / "ledger.json"
+            first = ledger_attempt(1)
+            bridge.reserve_attempt(ledger, first)
+            replay = ledger_attempt(2)
+            replay["budget_reservation_id"] = first["budget_reservation_id"]
+            with self.assertRaisesRegex(bridge.BridgeError, "budget reservation"):
+                bridge.reserve_attempt(ledger, replay)
 
     def test_legacy_duplicate_without_model_remains_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:

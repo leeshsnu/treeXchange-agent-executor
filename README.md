@@ -125,11 +125,14 @@ duplicate-key JSON and schema drift are preserved as feedback but force
 local subscription-based U2 loop. It does not weaken or replace the no-tools U1
 review bridge. It defines two explicit execution profiles:
 
-- `repository_reviewer` receives only the trusted local `read_file`,
-  `list_files`, and `search_text` tools. Claude's built-in file tools are
-  disabled. The local tool server enforces signed repository-relative scopes on
-  every call; shell, network, third-party MCP, subagent and edit tools are
-  unavailable, and any resulting worktree change quarantines the run.
+- `repository_reviewer` receives only the trusted local `read_diff`,
+  `read_file`, `list_files`, and `search_text` tools. The raw diff is never
+  embedded in the authority-bearing prompt: `read_diff` derives it from the
+  signed exact Base and Head, rechecks the signed changed-path scope and returns
+  it as untrusted tool evidence with a trusted digest. Claude's built-in file
+  tools are disabled. The local tool server enforces signed repository-relative
+  scopes on every call; shell, network, third-party MCP, subagent and edit tools
+  are unavailable, and any resulting worktree change quarantines the run.
 - `scoped_maker` is available only for the private Season 2 repository. It may
   inspect signed scopes with the same three local tools and receives
   `write_file` and `replace_text` only for signed exact low-risk files. The
@@ -147,7 +150,8 @@ Every work request is complete, expires within 24 hours, is HMAC-signed by the
 deterministic controller, names one exact repository, branch, Base, target Head,
 role, path set, model profile, turn cap and acceptance contract, and carries a
 single-use nonce plus signed pause-release and budget-reservation evidence.
-Requests and outputs stay owner-only under the target repository's ignored
+The nonce, request id and budget-reservation id are each consumed once in the
+shared ledger. Requests and outputs stay owner-only under the target repository's ignored
 `.agent-state` directory. The call ledger stays owner-only under the repository's
 shared Git metadata so linked worktrees cannot create separate budgets. Legacy
 calls receive stable source-position identities and are migrated into that

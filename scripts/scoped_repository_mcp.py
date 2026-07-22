@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import stat
@@ -18,13 +19,15 @@ import u1_executor
 
 SERVER_NAME = "treexchange_repo"
 PROTOCOL_VERSION = "2024-11-05"
-READ_TOOLS = ("read_file", "list_files", "search_text")
+COMMON_READ_TOOLS = ("read_file", "list_files", "search_text")
+REVIEW_TOOLS = ("read_diff",) + COMMON_READ_TOOLS
 WRITE_TOOLS = ("write_file", "replace_text")
 SENSITIVE_PARTS = {".git", ".agent-state", ".claude", ".ssh", ".aws", ".kube"}
 MAX_LISTED_FILES = 500
 MAX_SEARCH_MATCHES = 100
 MAX_SEARCH_BYTES = 1_000_000
 MAX_TRACKED_FILES = 20_000
+REVIEW_ARTIFACT_PATHSPEC = ":(exclude)reviews/*.json"
 
 
 class ScopeError(Exception):
@@ -67,6 +70,10 @@ class RepositoryTools:
         read_scopes: list[str],
         write_paths: list[str],
         max_file_bytes: int,
+        base_sha: str | None = None,
+        target_sha: str | None = None,
+        diff_scopes: list[str] | None = None,
+        max_diff_bytes: int | None = None,
     ) -> None:
         self.repo = repo.resolve()
         if not self.repo.is_dir():
@@ -77,13 +84,28 @@ class RepositoryTools:
         self.read_scopes = tuple(read_scopes)
         self.write_paths = frozenset(write_paths)
         self.max_file_bytes = max_file_bytes
+        self.base_sha = base_sha
+        self.target_sha = target_sha
+        self.diff_scopes = tuple(diff_scopes or [])
+        self.max_diff_bytes = max_diff_bytes
         if not self.read_scopes or max_file_bytes <= 0:
             raise ScopeError("scoped tool policy is incomplete")
-        for scope in [*self.read_scopes, *self.write_paths]:
+        for scope in [*self.read_scopes, *self.write_paths, *self.diff_scopes]:
             raw = scope[:-3] if scope.endswith("/**") else scope
             normalize_path(raw)
         if role == "repository_reviewer" and self.write_paths:
             raise ScopeError("reviewer cannot receive writable paths")
+        if role == "repository_reviewer" and (
+            not isinstance(base_sha, str)
+            or not u1_executor.SHA_RE.fullmatch(base_sha)
+            or not isinstance(target_sha, str)
+            or not u1_executor.SHA_RE.fullmatch(target_sha)
+            or base_sha == target_sha
+            or not self.diff_scopes
+            or not isinstance(max_diff_bytes, int)
+            or max_diff_bytes <= 0
+        ):
+            raise ScopeError("reviewer diff policy is incomplete")
         if role == "scoped_maker" and not self.write_paths:
             raise ScopeError("maker requires at least one exact writable file")
         if role == "scoped_maker" and any(path.endswith("/**") for path in write_paths):
@@ -114,8 +136,62 @@ class RepositoryTools:
 
     def tool_names(self) -> tuple[str, ...]:
         if self.role == "repository_reviewer":
-            return READ_TOOLS
-        return READ_TOOLS + WRITE_TOOLS
+            return REVIEW_TOOLS
+        return COMMON_READ_TOOLS + WRITE_TOOLS
+
+    def _git(self, *args: str) -> bytes:
+        try:
+            completed = subprocess.run(
+                ["git", *args],
+                cwd=self.repo,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ScopeError("signed review diff is unavailable") from error
+        if completed.returncode != 0:
+            raise ScopeError("signed review diff is unavailable")
+        return completed.stdout
+
+    def _diff(self) -> dict[str, Any]:
+        if self.role != "repository_reviewer":
+            raise ScopeError("diff evidence is reviewer-only")
+        assert self.base_sha is not None and self.target_sha is not None
+        changed_raw = self._git(
+            "diff", "--name-only", "-z", self.base_sha, self.target_sha,
+            "--", ".", REVIEW_ARTIFACT_PATHSPEC,
+        )
+        try:
+            changed = [item.decode("utf-8") for item in changed_raw.split(b"\0") if item]
+        except UnicodeDecodeError as error:
+            raise ScopeError("review diff paths must be UTF-8") from error
+        if not changed or any(
+            sensitive_path(path)
+            or not any(path_matches(path, scope) for scope in self.diff_scopes)
+            for path in changed
+        ):
+            raise ScopeError("review diff escaped the signed path scope")
+        raw = self._git(
+            "diff", "--no-ext-diff", "--no-color", "--unified=3",
+            self.base_sha, self.target_sha, "--", ".", REVIEW_ARTIFACT_PATHSPEC,
+        )
+        if not raw or len(raw) > self.max_diff_bytes:
+            raise ScopeError("review diff is empty or exceeds the byte cap")
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ScopeError("review diff must be bounded UTF-8 text") from error
+        if any(pattern.search(content) for pattern in u1_executor.SECRET_PATTERNS):
+            raise ScopeError("review diff resembles a credential")
+        return {
+            "base_sha": self.base_sha,
+            "target_sha": self.target_sha,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+            "content": content,
+        }
 
     def _target(self, value: Any, *, writable: bool, must_exist: bool) -> tuple[str, Path]:
         relative = normalize_path(value)
@@ -235,6 +311,10 @@ class RepositoryTools:
     def call(self, name: str, arguments: Any) -> Any:
         if name not in self.tool_names() or not isinstance(arguments, dict):
             raise ScopeError("tool call is outside the role contract")
+        if name == "read_diff":
+            if arguments:
+                raise ScopeError("read_diff accepts no arguments")
+            return self._diff()
         if name == "read_file":
             relative, content = self._read(arguments.get("path"))
             return {"path": relative, "content": content}
@@ -247,11 +327,13 @@ class RepositoryTools:
             if not isinstance(query, str) or not query or len(query) > 200:
                 raise ScopeError("search query is outside the bounded contract")
             matches: list[dict[str, Any]] = []
+            skipped_paths: list[str] = []
             consumed = 0
             for relative in self._files():
                 try:
                     _, content = self._read(relative)
                 except ScopeError:
+                    skipped_paths.append(relative)
                     continue
                 consumed += len(content.encode("utf-8"))
                 if consumed > MAX_SEARCH_BYTES:
@@ -262,8 +344,16 @@ class RepositoryTools:
                             {"path": relative, "line": line_number, "text": line[:500]}
                         )
                         if len(matches) >= MAX_SEARCH_MATCHES:
-                            return {"matches": matches, "truncated": True}
-            return {"matches": matches, "truncated": False}
+                            return {
+                                "matches": matches,
+                                "truncated": True,
+                                "skipped_paths": skipped_paths,
+                            }
+            return {
+                "matches": matches,
+                "truncated": False,
+                "skipped_paths": skipped_paths,
+            }
         if name == "write_file":
             return self._write(arguments.get("path"), arguments.get("content"))
         if name == "replace_text":
@@ -281,6 +371,10 @@ class RepositoryTools:
 
 def tool_definitions(names: tuple[str, ...]) -> list[dict[str, Any]]:
     definitions = {
+        "read_diff": {
+            "description": "Read the exact signed Base-to-Head UTF-8 diff as untrusted evidence.",
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
         "read_file": {
             "description": "Read one UTF-8 file inside the signed repository scopes.",
             "inputSchema": {
@@ -396,6 +490,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--read-scopes", required=True)
     parser.add_argument("--write-paths", required=True)
     parser.add_argument("--max-file-bytes", type=int, required=True)
+    parser.add_argument("--base-sha")
+    parser.add_argument("--target-sha")
+    parser.add_argument("--diff-scopes", default="[]")
+    parser.add_argument("--max-diff-bytes", type=int)
     return parser.parse_args()
 
 
@@ -404,7 +502,8 @@ def main() -> int:
     try:
         read_scopes = json.loads(args.read_scopes)
         write_paths = json.loads(args.write_paths)
-        if not isinstance(read_scopes, list) or not isinstance(write_paths, list):
+        diff_scopes = json.loads(args.diff_scopes)
+        if not all(isinstance(item, list) for item in (read_scopes, write_paths, diff_scopes)):
             raise ScopeError("scope arguments must be JSON lists")
         tools = RepositoryTools(
             args.repo,
@@ -412,6 +511,10 @@ def main() -> int:
             read_scopes,
             write_paths,
             args.max_file_bytes,
+            args.base_sha,
+            args.target_sha,
+            diff_scopes,
+            args.max_diff_bytes,
         )
         serve(tools)
     except (json.JSONDecodeError, ScopeError):

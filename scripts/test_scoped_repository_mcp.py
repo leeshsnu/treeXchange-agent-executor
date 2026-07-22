@@ -49,6 +49,20 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
             check=True,
             capture_output=True,
         )
+        self.base = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        (target / "HANDOFF.md").write_text("reviewed\n", encoding="utf-8")
+        subprocess.run(["git", "add", "services/model/HANDOFF.md"], cwd=self.repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "review fixture"], cwd=self.repo,
+            check=True, capture_output=True,
+        )
+        self.head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -59,6 +73,10 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
             "repository_reviewer",
             ["services/model/**"],
             [],
+            100_000,
+            self.base,
+            self.head,
+            ["services/model/HANDOFF.md"],
             100_000,
         )
 
@@ -81,6 +99,16 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
         self.assertNotIn("services/model/CLAUDE.md", listing)
         matches = tools.call("search_text", {"query": "needle"})["matches"]
         self.assertEqual(matches[0]["path"], "services/model/README.md")
+
+    def test_reviewer_reads_exact_signed_diff_only_through_review_tool(self):
+        evidence = self.reviewer().call("read_diff", {})
+        self.assertEqual(evidence["base_sha"], self.base)
+        self.assertEqual(evidence["target_sha"], self.head)
+        self.assertIn("+reviewed", evidence["content"])
+        self.assertRegex(evidence["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(evidence["bytes"], len(evidence["content"].encode()))
+        with self.assertRaises(mcp.ScopeError):
+            self.maker().call("read_diff", {})
 
     def test_untracked_local_file_inside_scope_is_denied(self):
         local = self.repo / "services/model/local-notes.txt"
@@ -166,8 +194,10 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
             )
 
     def test_tool_definitions_are_role_specific(self):
-        self.assertEqual(self.reviewer().tool_names(), mcp.READ_TOOLS)
-        self.assertEqual(self.maker().tool_names(), mcp.READ_TOOLS + mcp.WRITE_TOOLS)
+        self.assertEqual(self.reviewer().tool_names(), mcp.REVIEW_TOOLS)
+        self.assertEqual(
+            self.maker().tool_names(), mcp.COMMON_READ_TOOLS + mcp.WRITE_TOOLS
+        )
 
     def test_stdio_protocol_lists_and_executes_only_reviewer_tools(self):
         messages = [
@@ -202,6 +232,14 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
                 "[]",
                 "--max-file-bytes",
                 "100000",
+                "--base-sha",
+                self.base,
+                "--target-sha",
+                self.head,
+                "--diff-scopes",
+                '["services/model/HANDOFF.md"]',
+                "--max-diff-bytes",
+                "100000",
             ],
             input="".join(json.dumps(item) + "\n" for item in messages),
             text=True,
@@ -211,7 +249,7 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
         responses = [json.loads(line) for line in completed.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["protocolVersion"], mcp.PROTOCOL_VERSION)
         names = [item["name"] for item in responses[1]["result"]["tools"]]
-        self.assertEqual(tuple(names), mcp.READ_TOOLS)
+        self.assertEqual(tuple(names), mcp.REVIEW_TOOLS)
         content = json.loads(responses[2]["result"]["content"][0]["text"])
         self.assertEqual(content["path"], "services/model/README.md")
 

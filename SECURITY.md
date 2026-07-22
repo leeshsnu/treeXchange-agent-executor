@@ -153,8 +153,10 @@ signed request binds distinct pause-release and budget-reservation evidence.
 Tool permission is role-specific and deny-first. All Claude built-in file,
 shell, web, GitHub, plugin and subagent tools are disabled. `--strict-mcp-config`
 admits only the pinned local `scoped_repository_mcp.py` server; no third-party or
-network MCP server is loaded. The read-only Reviewer receives three scoped read
-operations. The Maker adds two write operations that accept only signed exact
+network MCP server is loaded. The read-only Reviewer receives one exact
+Base-to-Head diff operation plus three scoped repository-read operations. The
+diff is returned as untrusted tool evidence instead of being embedded in the
+authority-bearing prompt. The Maker adds two write operations that accept only signed exact
 low-risk files in an already-created clean `claude/` worktree. The server
 revalidates canonical repository containment, signed scope, sensitive paths,
 tracked-file inventory, links, byte limits, UTF-8 and credential patterns for

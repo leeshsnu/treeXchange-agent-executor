@@ -323,6 +323,11 @@ def reserve_attempt(
             for call in ledger["calls"]
         ):
             fail("signed Claude work-request nonce has already been consumed")
+        if attempt.get("budget_reservation_id") is not None and any(
+            call.get("budget_reservation_id") == attempt.get("budget_reservation_id")
+            for call in ledger["calls"]
+        ):
+            fail("signed Claude budget reservation has already been consumed")
         called_day = attempt["called_at"][:10]
         daily_calls = [
             call for call in ledger["calls"]
@@ -490,7 +495,13 @@ def require_local_claude_runtime(home: Path | None = None) -> None:
     failure = False
     try:
         debug_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if debug_dir.is_symlink() or not debug_dir.is_dir():
+        metadata = os.stat(debug_dir, follow_symlinks=False)
+        if (
+            debug_dir.is_symlink()
+            or not debug_dir.is_dir()
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
             failure = True
         else:
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
