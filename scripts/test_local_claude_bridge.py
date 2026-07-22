@@ -62,6 +62,7 @@ class BridgeTests(unittest.TestCase):
         self.assertIn('"verdict": "APPROVE or CHANGES_REQUESTED"', prompt)
         self.assertIn("these exact six top-level keys", prompt)
         self.assertIn("exactly severity, status, and finding", prompt)
+        self.assertIn("Never reproduce raw HTML-comment delimiters", prompt)
         self.assertIn("every finding under 700 characters", prompt)
 
     def test_no_tools_or_settings_are_available_to_claude(self):

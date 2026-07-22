@@ -613,7 +613,7 @@ def verify_rendered_proposal(
     current_content: str,
 ) -> None:
     expected = render_proposal(result, metadata, current_content=current_content)
-    if not hmac.compare_digest(body, expected):
+    if not hmac.compare_digest(body.encode("utf-8"), expected.encode("utf-8")):
         core.fail(
             "rendered Maker proposal differs from the revalidated result",
             core.INVALID,

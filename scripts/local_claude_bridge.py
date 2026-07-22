@@ -322,6 +322,8 @@ Required final object shape (these exact six top-level keys, no others):
 }}
 Every findings item must contain exactly severity, status, and finding, with no other keys.
 Do not use decision, id, title, confidence, category, location, evidence, impact, or recommendation fields.
+Never reproduce raw HTML-comment delimiters or credential-shaped examples in any output string;
+describe them as hidden-markup delimiters or credential patterns instead.
 Keep summary and every finding under 700 characters. Keep every other string under 300 characters.
 Use at most 8 findings and at most 6 items in each remaining array.
 

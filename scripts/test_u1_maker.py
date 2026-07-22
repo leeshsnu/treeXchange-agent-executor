@@ -302,7 +302,7 @@ class ProposalTests(unittest.TestCase):
             "reservation_run_id": 42,
             "request_id": "request-maker-1234",
         }
-        result = valid_result("changed")
+        result = valid_result("# 변경된 한국어 문서\n")
         environment = {
             "GITHUB_SHA": "f" * 40,
             "GITHUB_RUN_ID": "456",
@@ -310,18 +310,21 @@ class ProposalTests(unittest.TestCase):
         }
         with mock.patch.dict(os.environ, environment, clear=True):
             rendered = maker.render_proposal(
-                result, metadata, current_content="current"
+                result, metadata, current_content="# 현재 한국어 문서\n"
             )
             maker.verify_rendered_proposal(
-                rendered, result, metadata, current_content="current"
+                rendered, result, metadata, current_content="# 현재 한국어 문서\n"
             )
             with self.assertRaisesRegex(core.GateError, "differs"):
                 maker.verify_rendered_proposal(
-                    rendered + "tampered", result, metadata, current_content="current"
+                    rendered + "변조", result, metadata, current_content="# 현재 한국어 문서\n"
                 )
             with self.assertRaisesRegex(core.GateError, "must change"):
                 maker.verify_rendered_proposal(
-                    rendered, valid_result("current"), metadata, current_content="current"
+                    rendered,
+                    valid_result("# 현재 한국어 문서\n"),
+                    metadata,
+                    current_content="# 현재 한국어 문서\n",
                 )
 
     def test_maker_uses_collision_checked_github_env_writer(self):
