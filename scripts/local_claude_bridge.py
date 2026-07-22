@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import uuid
@@ -72,13 +73,18 @@ REVIEW_WINDOW_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{7,63}$")
 
 
 class BridgeError(Exception):
-    def __init__(self, message: str, code: int = DENY):
+    def __init__(
+        self, message: str, code: int = DENY, failure_class: str | None = None
+    ):
         super().__init__(message)
         self.code = code
+        self.failure_class = failure_class
 
 
-def fail(message: str, code: int = DENY) -> None:
-    raise BridgeError(message, code)
+def fail(
+    message: str, code: int = DENY, failure_class: str | None = None
+) -> None:
+    raise BridgeError(message, code, failure_class)
 
 
 def run_git(repo: Path, *args: str) -> str:
@@ -204,11 +210,73 @@ def locked_ledger(path: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def reserve_attempt(path: Path, attempt: dict[str, Any]) -> dict[str, int]:
+def git_common_dir(repo: Path) -> Path:
+    raw = run_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    common = Path(raw).resolve()
+    if not common.is_dir():
+        fail("shared Git state directory is unavailable")
+    return common
+
+
+def shared_ledger_path(repo: Path) -> Path:
+    return git_common_dir(repo) / "treeXchange-agent-state/claude-call-ledger.json"
+
+
+def legacy_worktree_ledgers(repo: Path) -> list[Path]:
+    raw = run_git(repo, "worktree", "list", "--porcelain")
+    shared = shared_ledger_path(repo)
+    paths: list[Path] = []
+    for line in raw.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        worktree = Path(line.removeprefix("worktree ")).resolve()
+        raw_candidate = worktree / ".agent-state/claude-call-ledger.json"
+        if not raw_candidate.exists():
+            continue
+        if raw_candidate.is_symlink():
+            fail("legacy Claude call ledger must not be a symlink")
+        candidate = raw_candidate.resolve()
+        try:
+            candidate.relative_to(worktree)
+        except ValueError:
+            fail("legacy Claude call ledger escaped its worktree")
+        if stat.S_IMODE(candidate.stat().st_mode) & 0o077:
+            fail("legacy Claude call ledger must be owner-readable only")
+        if candidate.exists() and candidate != shared:
+            paths.append(candidate)
+    return sorted(set(paths))
+
+
+def load_effective_ledger(path: Path, legacy_paths: tuple[Path, ...]) -> dict[str, Any]:
+    ledgers = [load_ledger(path)] + [load_ledger(item) for item in legacy_paths]
+    calls: list[dict[str, Any]] = []
+    by_attempt: dict[str, dict[str, Any]] = {}
+    for ledger in ledgers:
+        for call in ledger["calls"]:
+            if not isinstance(call, dict):
+                fail("Claude call ledger contains a malformed call")
+            attempt_id = call.get("attempt_id")
+            if not isinstance(attempt_id, str) or not attempt_id:
+                fail("Claude call ledger contains an unbound attempt")
+            previous = by_attempt.get(attempt_id)
+            if previous is not None and previous != call:
+                fail("Claude call ledgers disagree about one attempt")
+            if previous is None:
+                by_attempt[attempt_id] = call
+                calls.append(call)
+    return {"schema_version": 1, "calls": calls}
+
+
+def reserve_attempt(
+    path: Path,
+    attempt: dict[str, Any],
+    legacy_paths: tuple[Path, ...] = (),
+) -> dict[str, int]:
     with locked_ledger(path):
         if attempt.get("requested_model") not in ALLOWED_MODELS:
             fail("Claude call reservation model is outside the approved allowlist", INVALID)
-        ledger = load_ledger(path)
+        shared = load_ledger(path)
+        ledger = load_effective_ledger(path, legacy_paths)
         if any(
             call.get("attempt_id") == attempt.get("attempt_id")
             for call in ledger["calls"]
@@ -255,10 +323,10 @@ def reserve_attempt(path: Path, attempt: dict[str, Any]) -> dict[str, int]:
             for call in ledger["calls"]
         ):
             fail("this exact review diff and model have already consumed a Claude call")
-        ledger["calls"].append(attempt)
-        save_private_json(path, ledger)
+        shared["calls"].append(attempt)
+        save_private_json(path, shared)
         return {
-            "ledger_calls": len(ledger["calls"]),
+            "ledger_calls": len(ledger["calls"]) + 1,
             "window_calls": len(window_calls) + 1,
             "daily_calls": len(daily_calls) + 1,
         }
@@ -287,22 +355,25 @@ def ledger_is_ignored(repo: Path, ledger: Path) -> bool:
     return completed.returncode == 0
 
 
-def require_output_boundary(repo: Path, output: Path, ledger: Path) -> tuple[Path, Path]:
+def require_output_boundary(
+    repo: Path, output: Path, ledger: Path | None
+) -> tuple[Path, Path, tuple[Path, ...]]:
     root = repo.resolve()
     resolved_output = output.resolve()
-    resolved_ledger = ledger.resolve()
     try:
         resolved_output.relative_to(root)
-        ledger_relative = resolved_ledger.relative_to(root)
     except ValueError:
-        fail("review output and ledger must remain inside the reviewed repository")
-    if not ledger_relative.parts or ledger_relative.parts[0] != ".agent-state":
-        fail("Claude call ledger must remain under the ignored .agent-state directory")
-    if not ledger_is_ignored(root, resolved_ledger):
-        fail("reviewed repository must explicitly ignore the Claude call ledger")
+        fail("review output must remain inside the reviewed repository")
+    expected_ledger = shared_ledger_path(root)
+    ledger_candidate = ledger if ledger is None or ledger.is_absolute() else root / ledger
+    resolved_ledger = expected_ledger if ledger_candidate is None else ledger_candidate.resolve()
+    if resolved_ledger != expected_ledger:
+        fail("Claude calls must use the repository-wide shared Git ledger")
+    if resolved_ledger.exists() and stat.S_IMODE(resolved_ledger.stat().st_mode) & 0o077:
+        fail("shared Claude call ledger must be owner-readable only")
     if resolved_output.exists():
         fail("review output path already exists; use a new provenance-bound filename")
-    return resolved_output, resolved_ledger
+    return resolved_output, resolved_ledger, tuple(legacy_worktree_ledgers(root))
 
 
 def build_prompt(identity: str, base_sha: str, head_sha: str, diff: str) -> str:
@@ -367,6 +438,22 @@ def resolve_model(task_profile: str, explicit_model: str | None = None) -> str:
     return model
 
 
+def classify_claude_failure(stderr: str) -> str:
+    value = stderr.lower()
+    if any(token in value for token in ("429", "rate limit", "usage limit", "quota")):
+        return "usage_or_rate_limit"
+    if any(
+        token in value
+        for token in ("401", "unauthorized", "unauthenticated", "not logged in", "login required")
+    ):
+        return "authentication_unavailable"
+    if any(token in value for token in ("model not found", "invalid model", "unknown model")):
+        return "model_unavailable"
+    if any(token in value for token in ("timeout", "timed out", "deadline exceeded")):
+        return "runtime_timeout"
+    return "unclassified_runtime_failure"
+
+
 def invoke_claude(
     prompt: str,
     schema: dict[str, Any],
@@ -408,14 +495,21 @@ def invoke_claude(
             input=prompt,
             text=True,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             timeout=timeout_seconds,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        fail("Claude Code invocation failed or timed out")
+        fail(
+            "Claude Code invocation failed or timed out",
+            failure_class="runtime_timeout",
+        )
     if completed.returncode != 0:
-        fail("Claude Code returned a non-zero status")
+        failure_class = classify_claude_failure(completed.stderr)
+        fail(
+            f"Claude Code returned a non-zero status ({failure_class})",
+            failure_class=failure_class,
+        )
     try:
         wrapper = json.loads(completed.stdout)
     except json.JSONDecodeError:
@@ -461,7 +555,9 @@ def invoke_claude(
 
 def review(args: argparse.Namespace) -> None:
     repo = args.repo.resolve()
-    output_path, ledger_path = require_output_boundary(repo, args.output, args.ledger)
+    output_path, ledger_path, legacy_ledgers = require_output_boundary(
+        repo, args.output, args.ledger
+    )
     identity = repository_identity(repo)
     base_sha = exact_commit(repo, args.base)
     head_sha = exact_commit(repo, args.head)
@@ -488,7 +584,7 @@ def review(args: argparse.Namespace) -> None:
         "review_window": args.review_window,
         "status": "started",
     }
-    reservation = reserve_attempt(ledger_path, attempt)
+    reservation = reserve_attempt(ledger_path, attempt, legacy_ledgers)
     try:
         response = invoke_claude(
             build_prompt(identity, base_sha, head_sha, diff),
@@ -496,13 +592,14 @@ def review(args: argparse.Namespace) -> None:
             args.timeout_seconds,
             selected_model,
         )
-    except (BridgeError, u1_executor.GateError):
+    except (BridgeError, u1_executor.GateError) as error:
         finish_attempt(
             ledger_path,
             attempt_id,
             {
                 "status": "failed",
                 "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "failure_class": getattr(error, "failure_class", None),
             },
         )
         raise
@@ -532,10 +629,7 @@ def review(args: argparse.Namespace) -> None:
             "Unstructured Claude output is useful feedback but can never authorize approval."
         )
         ledger_status = "succeeded_unstructured"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    save_private_json(output_path, output)
 
     ledger_calls = finish_attempt(
         ledger_path,
@@ -578,7 +672,10 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--review-window", required=True)
     command.add_argument("--output", type=Path, required=True)
     command.add_argument(
-        "--ledger", type=Path, default=Path(".agent-state/claude-call-ledger.json")
+        "--ledger",
+        type=Path,
+        default=None,
+        help="optional assertion; only the repository-wide shared Git ledger is accepted",
     )
     command.add_argument("--timeout-seconds", type=int, default=300)
     command.add_argument(

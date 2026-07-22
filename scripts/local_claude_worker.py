@@ -83,13 +83,18 @@ CHILD_ENV_ALLOWLIST = {
 
 
 class WorkerError(Exception):
-    def __init__(self, message: str, code: int = DENY):
+    def __init__(
+        self, message: str, code: int = DENY, failure_class: str | None = None
+    ):
         super().__init__(message)
         self.code = code
+        self.failure_class = failure_class
 
 
-def fail(message: str, code: int = DENY) -> None:
-    raise WorkerError(message, code)
+def fail(
+    message: str, code: int = DENY, failure_class: str | None = None
+) -> None:
+    raise WorkerError(message, code, failure_class)
 
 
 def load_json(path: Path, label: str) -> dict[str, Any]:
@@ -505,6 +510,8 @@ def require_safe_scope_target(repo: Path, scope: str, *, writable: bool) -> None
         fail("signed repository scope resolves outside the assigned repository")
     if writable and bridge.ledger_is_ignored(repo, cursor):
         fail("scoped Maker target is ignored by Git")
+    if writable and cursor.exists() and cursor.stat().st_nlink > 1:
+        fail("scoped Maker target has multiple hard links")
 
 
 def verify_repository_state(repo: Path, request: dict[str, Any]) -> None:
@@ -740,15 +747,22 @@ def invoke_claude(
             input=prompt,
             text=True,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             env=child_environment(config),
             timeout=config["limits"]["maximum_minutes"] * 60,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        fail("Claude local worker failed or timed out")
+        fail(
+            "Claude local worker failed or timed out",
+            failure_class="runtime_timeout",
+        )
     if completed.returncode != 0:
-        fail("Claude local worker returned a non-zero status")
+        failure_class = bridge.classify_claude_failure(completed.stderr)
+        fail(
+            f"Claude local worker returned a non-zero status ({failure_class})",
+            failure_class=failure_class,
+        )
     try:
         wrapper = json.loads(completed.stdout)
     except json.JSONDecodeError:
@@ -868,9 +882,11 @@ def run(args: argparse.Namespace) -> None:
     repo = args.repo.resolve()
     request_path = private_agent_path(repo, args.request, "work request", must_exist=True)
     output_path = private_agent_path(repo, args.output, "worker output", must_exist=False)
-    ledger_path = private_agent_path(repo, args.ledger, "worker ledger", must_exist=None)
-    if len({request_path, output_path, ledger_path}) != 3:
-        fail("work request, output, and ledger paths must be distinct")
+    _, ledger_path, legacy_ledgers = bridge.require_output_boundary(
+        repo, output_path, args.ledger
+    )
+    if request_path == output_path:
+        fail("work request and output paths must be distinct")
     raw_request = load_json(request_path, "U2 work request")
     request = validate_request(raw_request, config)
     verify_controller_signature(raw_request, config)
@@ -900,17 +916,18 @@ def run(args: argparse.Namespace) -> None:
         "review_window": request["window_id"],
         "status": "started",
     }
-    reservation = bridge.reserve_attempt(ledger_path, attempt)
+    reservation = bridge.reserve_attempt(ledger_path, attempt, legacy_ledgers)
     try:
         wrapper, result = invoke_claude(repo, request, config, prompt, schema, model)
         actual_paths, change_digest = validate_postconditions(repo, request, config, result)
-    except (WorkerError, bridge.BridgeError, u1_executor.GateError):
+    except (WorkerError, bridge.BridgeError, u1_executor.GateError) as error:
         bridge.finish_attempt(
             ledger_path,
             attempt_id,
             {
                 "status": "failed_or_quarantined",
                 "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "failure_class": getattr(error, "failure_class", None),
             },
         )
         raise
@@ -991,7 +1008,10 @@ def parser() -> argparse.ArgumentParser:
     execute.add_argument("--request", type=Path, required=True)
     execute.add_argument("--output", type=Path, required=True)
     execute.add_argument(
-        "--ledger", type=Path, default=Path(".agent-state/claude-call-ledger.json")
+        "--ledger",
+        type=Path,
+        default=None,
+        help="optional assertion; only the repository-wide shared Git ledger is accepted",
     )
     execute.add_argument("--config", type=Path, default=CONFIG_PATH)
     execute.set_defaults(handler=run)

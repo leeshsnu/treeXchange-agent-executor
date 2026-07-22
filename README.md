@@ -84,15 +84,20 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
 - records the selected task profile and model, and rejects a caller-supplied
   model that conflicts with the fixed profile;
 - requires schema-valid output and never resumes a prior Claude session;
+- captures Claude stderr only in memory and persists a fixed failure category,
+  never the raw error text, so authentication and usage-limit failures remain
+  diagnosable without copying credential-bearing output into logs;
 - rejects credential-like or oversized evidence;
 - excludes checked-in `reviews/*.json` audit outputs from later model input so
   they cannot inflate or bias an independent follow-up review, while keeping
   implementation code, configuration, documentation and tests in scope;
-- confines the review output and ignored ledger to the repository being
-  reviewed, preventing a private Season 2 review from crossing into this public
-  executor repository;
-- keeps a private, ignored call ledger, records failed attempts before invoking
-  Claude, serializes reservations with an OS file lock, and refuses a duplicate
+- confines review output to the repository being reviewed and stores the call
+  ledger under that repository's shared Git metadata, preventing private Season
+  2 output from crossing into this public executor while making every linked
+  worktree consume the same caps;
+- keeps the shared call ledger owner-only, counts pre-migration worktree-local
+  ledgers, records failed attempts before invoking Claude, serializes
+  reservations with an OS file lock, and refuses a duplicate
   model review of the same diff. One independent review per approved model is
   allowed for cross-model validation. Calls are bounded to 12 per work-item
   review window, 2 new windows per
@@ -129,8 +134,9 @@ Every work request is complete, expires within 24 hours, is HMAC-signed by the
 deterministic controller, names one exact repository, branch, Base, target Head,
 role, path set, model profile, turn cap and acceptance contract, and carries a
 single-use nonce plus signed pause-release and budget-reservation evidence.
-Requests, outputs and the shared call ledger stay owner-only under the target
-repository's ignored `.agent-state` directory. The Claude
+Requests and outputs stay owner-only under the target repository's ignored
+`.agent-state` directory. The call ledger stays owner-only under the repository's
+shared Git metadata so linked worktrees cannot create separate budgets. The Claude
 child process receives only a minimal environment; the controller key and
 GitHub credentials are removed while the local subscription OAuth credential
 may be inherited.

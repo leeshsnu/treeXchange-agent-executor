@@ -21,6 +21,13 @@ bridge = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bridge)
 
 
+def git(repo: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args], cwd=repo, text=True, capture_output=True, check=True
+    )
+    return completed.stdout.strip()
+
+
 def ledger_attempt(index, *, work_item="OPS-03", window="ops-03-window-01", day="2026-07-20"):
     return {
         "attempt_id": f"attempt-{index}",
@@ -168,6 +175,27 @@ class BridgeTests(unittest.TestCase):
                 response = bridge.invoke_claude("bounded", {"type": "object"}, 60)
         self.assertEqual(response["format"], "unstructured")
         self.assertEqual(response["raw_review"], "Useful prose review.")
+
+    def test_nonzero_claude_status_is_classified_without_echoing_stderr(self):
+        cases = {
+            "HTTP 429 usage limit reached secret-value": "usage_or_rate_limit",
+            "401 unauthorized; login required secret-value": "authentication_unavailable",
+            "invalid model secret-value": "model_unavailable",
+            "unexpected runtime failure secret-value": "unclassified_runtime_failure",
+        }
+        for stderr, expected in cases.items():
+            with self.subTest(expected=expected):
+                completed = subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="", stderr=stderr
+                )
+                with mock.patch.dict(bridge.os.environ, {}, clear=True):
+                    with mock.patch.object(
+                        bridge.subprocess, "run", return_value=completed
+                    ):
+                        with self.assertRaises(bridge.BridgeError) as raised:
+                            bridge.invoke_claude("bounded", {"type": "object"}, 60)
+                self.assertEqual(raised.exception.failure_class, expected)
+                self.assertNotIn("secret-value", str(raised.exception))
 
     def test_exact_schema_json_text_is_machine_validated(self):
         review = {
@@ -348,13 +376,63 @@ class BridgeTests(unittest.TestCase):
                     repo / ".agent-state" / "ledger.json",
                 )
 
-    def test_ledger_must_stay_in_ignored_agent_state(self):
+    def test_ledger_must_use_repository_wide_shared_git_state(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
-            with self.assertRaises(bridge.BridgeError):
+            git(repo, "init", "-b", "main")
+            with self.assertRaisesRegex(bridge.BridgeError, "repository-wide"):
                 bridge.require_output_boundary(
                     repo, repo / "reviews" / "review.json", repo / "ledger.json"
                 )
+
+    def test_linked_worktrees_share_caps_and_legacy_calls_are_counted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "primary"
+            linked = Path(directory) / "linked"
+            repo.mkdir()
+            git(repo, "init", "-b", "main")
+            git(repo, "config", "user.name", "Bridge Test")
+            git(repo, "config", "user.email", "bridge@example.invalid")
+            (repo / "README.md").write_text("test\n", encoding="utf-8")
+            git(repo, "add", "README.md")
+            git(repo, "commit", "-m", "initial")
+            git(repo, "worktree", "add", "-b", "linked", str(linked))
+            self.assertEqual(
+                bridge.shared_ledger_path(repo), bridge.shared_ledger_path(linked)
+            )
+
+            primary_legacy = repo / ".agent-state/claude-call-ledger.json"
+            linked_legacy = linked / ".agent-state/claude-call-ledger.json"
+            bridge.save_private_json(
+                primary_legacy,
+                {"schema_version": 1, "calls": [ledger_attempt(1)]},
+            )
+            bridge.save_private_json(
+                linked_legacy,
+                {"schema_version": 1, "calls": [ledger_attempt(2)]},
+            )
+            legacy = tuple(bridge.legacy_worktree_ledgers(repo))
+            self.assertEqual(
+                set(legacy), {primary_legacy.resolve(), linked_legacy.resolve()}
+            )
+            result = bridge.reserve_attempt(
+                bridge.shared_ledger_path(repo), ledger_attempt(3), legacy
+            )
+            self.assertEqual(result["daily_calls"], 3)
+            self.assertEqual(result["ledger_calls"], 3)
+
+    def test_legacy_ledger_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "repo"
+            repo.mkdir()
+            git(repo, "init", "-b", "main")
+            state = repo / ".agent-state"
+            state.mkdir()
+            outside = Path(directory) / "outside.json"
+            bridge.save_private_json(outside, {"schema_version": 1, "calls": []})
+            (state / "claude-call-ledger.json").symlink_to(outside)
+            with self.assertRaisesRegex(bridge.BridgeError, "must not be a symlink"):
+                bridge.legacy_worktree_ledgers(repo)
 
     def test_diff_secret_pattern_is_rejected(self):
         secret = b"+github_pat_" + b"A" * 30

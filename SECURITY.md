@@ -92,10 +92,13 @@ reservation and attended dispatch.
 `scripts/local_claude_bridge.py` uses the user's existing local Claude Code
 login for attended bootstrap reviews. It passes no file, shell, web, MCP, or
 delegation tools to Claude. The exact Git diff is supplied as untrusted prompt
-evidence, and only schema-valid output is persisted. A local ignored ledger
-records call identity, reported usage, and verdict without storing prompt text.
-The bridge verifies that the ledger is genuinely ignored by the reviewed Git
-repository and serializes call reservations with an OS file lock.
+evidence, and only schema-valid output is persisted. One owner-only ledger under
+the repository's shared Git metadata records call identity, reported usage, and
+verdict without storing prompt text. Every linked worktree resolves the same
+ledger and OS lock; legacy worktree-local ledgers are included in cap checks.
+Legacy ledgers must be owner-only regular files inside their exact worktree.
+Claude stderr is classified in memory into a fixed non-secret failure category;
+raw stderr is neither printed nor persisted.
 Checked-in `reviews/*.json` outputs remain Git audit evidence but are excluded
 from later model input; all implementation-bearing paths remain reviewable.
 If the CLI omits `structured_output`, only an exact single JSON object with no

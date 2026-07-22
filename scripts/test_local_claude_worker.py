@@ -354,6 +354,17 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(worker.WorkerError, "crosses a symlink"):
                 worker.verify_repository_state(repository.root, request)
 
+    def test_maker_hard_link_target_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = GitRepository(directory)
+            original = repository.root / "services/model/HANDOFF_NEEDED.md"
+            alias = repository.root / "services/model/HARDLINK.md"
+            os.link(original, alias)
+            with self.assertRaisesRegex(worker.WorkerError, "hard links"):
+                worker.require_safe_scope_target(
+                    repository.root, "services/model/HARDLINK.md", writable=True
+                )
+
     def test_maker_out_of_scope_change_is_quarantined(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = GitRepository(directory)
