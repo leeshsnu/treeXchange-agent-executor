@@ -179,14 +179,63 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
         or controller["minimum_key_bytes"] < 32
     ):
         fail("U2 controller trust contract is invalid", INVALID)
-    if value.get("activation") != {
-        "enabled": False,
-        "trusted_sha_environment": "U2_EXECUTOR_TRUSTED_SHA",
-        "requires_controller_signature": True,
-        "requires_control_release_id": True,
-        "requires_budget_reservation_id": True,
-    }:
-        fail("U2 activation contract drifted from the approved paused state", INVALID)
+    activation = value.get("activation")
+    activation_fields = {
+        "enabled",
+        "enabled_roles",
+        "approved_by",
+        "approved_at",
+        "expires_at",
+        "trusted_sha_environment",
+        "requires_controller_signature",
+        "requires_control_release_id",
+        "requires_budget_reservation_id",
+    }
+    if not isinstance(activation, dict) or set(activation) != activation_fields:
+        fail("U2 activation contract drifted", INVALID)
+    if activation.get("trusted_sha_environment") != "U2_EXECUTOR_TRUSTED_SHA" or any(
+        activation.get(name) is not True
+        for name in (
+            "requires_controller_signature",
+            "requires_control_release_id",
+            "requires_budget_reservation_id",
+        )
+    ):
+        fail("U2 activation safety requirements drifted", INVALID)
+    status = value.get("status")
+    if status == "proposed_paused":
+        if activation != {
+            "enabled": False,
+            "enabled_roles": [],
+            "approved_by": None,
+            "approved_at": None,
+            "expires_at": None,
+            "trusted_sha_environment": "U2_EXECUTOR_TRUSTED_SHA",
+            "requires_controller_signature": True,
+            "requires_control_release_id": True,
+            "requires_budget_reservation_id": True,
+        }:
+            fail("paused U2 activation fields must remain empty and false", INVALID)
+    elif status == "approved_active":
+        enabled_roles = activation.get("enabled_roles")
+        if activation.get("enabled") is not True:
+            fail("active U2 config must enable its bounded roles", INVALID)
+        if (
+            not isinstance(enabled_roles, list)
+            or not enabled_roles
+            or enabled_roles != sorted(set(enabled_roles))
+            or any(role not in expected_roles for role in enabled_roles)
+            or "repository_reviewer" not in enabled_roles
+        ):
+            fail("active U2 roles must be a canonical reviewer-first subset", INVALID)
+        if not isinstance(activation.get("approved_by"), str) or not activation["approved_by"].strip():
+            fail("active U2 config requires an approval identity", INVALID)
+        approved = parse_utc(activation.get("approved_at", ""), "approved_at")
+        expires = parse_utc(activation.get("expires_at", ""), "expires_at")
+        if not dt.timedelta(0) < expires - approved <= dt.timedelta(days=7):
+            fail("U2 activation window must be positive and at most seven days", INVALID)
+    else:
+        fail("U2 status is outside the activation contract", INVALID)
     if value.get("repositories") != sorted(bridge.ALLOWED_REPOSITORIES):
         fail("U2 repository allowlist drifted from the local bridge", INVALID)
     blocked = value.get("blocked_maker_paths")
@@ -206,18 +255,31 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
 
 
 def require_activation(
-    config: dict[str, Any], environ: dict[str, str] | None = None
+    config: dict[str, Any],
+    environ: dict[str, str] | None = None,
+    now: dt.datetime | None = None,
 ) -> None:
     activation = config.get("activation")
     if config.get("status") != "approved_active" or not isinstance(activation, dict):
         fail("U2 local worker remains proposed and paused")
     if activation.get("enabled") is not True:
         fail("U2 local worker activation is disabled")
+    approved = parse_utc(activation.get("approved_at", ""), "approved_at")
+    expires = parse_utc(activation.get("expires_at", ""), "expires_at")
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if not approved <= current < expires:
+        fail("U2 local worker is outside its approved activation window")
     source = os.environ if environ is None else environ
     trusted_sha = source.get(activation.get("trusted_sha_environment", ""))
     running_sha = bridge.exact_commit(ROOT, "HEAD")
     if trusted_sha != running_sha:
         fail("U2 running commit does not match the user's exact trusted SHA")
+
+
+def require_role_activation(config: dict[str, Any], role: str) -> None:
+    enabled_roles = config.get("activation", {}).get("enabled_roles", [])
+    if role not in enabled_roles:
+        fail("requested U2 role is not enabled by the approved activation")
 
 
 def canonical_request(request: dict[str, Any]) -> bytes:
@@ -398,6 +460,12 @@ def validate_request(
             for blocked_scope in blocked
         ):
             fail("scoped maker request intersects a protected path", INVALID)
+        if any(
+            PurePosixPath(scope).name == ".env"
+            or PurePosixPath(scope).name.startswith(".env.")
+            for scope in allowed_paths
+        ):
+            fail("scoped maker request intersects a credential path", INVALID)
         if any(
             not any(scope_covers(read_scope, scope) for read_scope in read_paths)
             for scope in allowed_paths
@@ -856,6 +924,14 @@ def working_tree_evidence(repo: Path, config: dict[str, Any]) -> tuple[list[str]
     for relative in untracked:
         target = repo / relative
         try:
+            metadata = target.lstat()
+        except OSError:
+            fail("Claude Maker untracked output could not be inspected")
+        if stat.S_ISLNK(metadata.st_mode):
+            fail("Claude Maker created or changed a symlink; worktree is quarantined")
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            fail("Claude Maker untracked output must be a single regular file")
+        try:
             data = target.read_bytes()
         except OSError:
             fail("Claude Maker untracked output could not be inspected")
@@ -1001,6 +1077,7 @@ def run(args: argparse.Namespace) -> None:
         fail("work request and output paths must be distinct")
     raw_request = load_json(request_path, "U2 work request")
     request = validate_request(raw_request, config)
+    require_role_activation(config, request["role"])
     verify_controller_signature(raw_request, config)
     verify_repository_state(repo, request)
     model = bridge.resolve_model(request["task_profile"])
@@ -1110,6 +1187,7 @@ def validate_config(_: argparse.Namespace) -> None:
             {
                 "status": config["status"],
                 "activation_enabled": config["activation"]["enabled"],
+                "enabled_roles": config["activation"]["enabled_roles"],
                 "roles": sorted(config["roles"]),
             },
             separators=(",", ":"),

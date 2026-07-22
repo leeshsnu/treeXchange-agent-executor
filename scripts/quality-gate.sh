@@ -18,17 +18,20 @@ python3 -m py_compile \
   scripts/u1_maker.py \
   scripts/local_claude_bridge.py \
   scripts/local_claude_worker.py \
+  scripts/u2_activation_readiness.py \
   scripts/scoped_repository_mcp.py \
   scripts/test_u1_executor.py \
   scripts/test_u1_maker.py \
   scripts/test_local_claude_bridge.py \
   scripts/test_local_claude_worker.py \
+  scripts/test_u2_activation_readiness.py \
   scripts/test_scoped_repository_mcp.py
 python3 -m unittest -v \
   scripts/test_u1_executor.py \
   scripts/test_u1_maker.py \
   scripts/test_local_claude_bridge.py \
   scripts/test_local_claude_worker.py \
+  scripts/test_u2_activation_readiness.py \
   scripts/test_scoped_repository_mcp.py
 ruby -e 'require "yaml"; Dir[".github/workflows/*.{yml,yaml}"].each { |path| YAML.parse_file(path) }'
 python3 scripts/u1_executor.py validate-config

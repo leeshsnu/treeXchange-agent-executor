@@ -37,6 +37,22 @@ def sign_request(request: dict) -> dict:
     return request
 
 
+def active_config(config: dict, enabled_roles: list[str] | None = None) -> dict:
+    value = copy.deepcopy(config)
+    now = dt.datetime.now(dt.timezone.utc)
+    value["status"] = "approved_active"
+    value["activation"].update(
+        {
+            "enabled": True,
+            "enabled_roles": enabled_roles or ["repository_reviewer"],
+            "approved_by": "user",
+            "approved_at": (now - dt.timedelta(minutes=1)).isoformat(),
+            "expires_at": (now + dt.timedelta(hours=1)).isoformat(),
+        }
+    )
+    return value
+
+
 def work_request(role: str = "scoped_maker") -> dict:
     maker = role == "scoped_maker"
     request = {
@@ -123,6 +139,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
     def test_config_is_explicitly_paused_with_two_role_profiles(self):
         self.assertEqual(self.config["status"], "proposed_paused")
         self.assertFalse(self.config["activation"]["enabled"])
+        self.assertEqual(self.config["activation"]["enabled_roles"], [])
         self.assertEqual(
             set(self.config["roles"]), {"repository_reviewer", "scoped_maker"}
         )
@@ -139,9 +156,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
                 worker.load_config(path)
 
     def test_future_activation_requires_user_trusted_exact_running_sha(self):
-        active = copy.deepcopy(self.config)
-        active["status"] = "approved_active"
-        active["activation"]["enabled"] = True
+        active = active_config(self.config)
         with mock.patch.object(worker.bridge, "exact_commit", return_value="a" * 40):
             with self.assertRaisesRegex(worker.WorkerError, "exact trusted SHA"):
                 worker.require_activation(
@@ -150,6 +165,34 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             worker.require_activation(
                 active, {"U2_EXECUTOR_TRUSTED_SHA": "a" * 40}
             )
+
+    def test_active_config_is_time_bounded_and_reviewer_first(self):
+        active = active_config(self.config)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(active), encoding="utf-8")
+            loaded = worker.load_config(path)
+        self.assertEqual(loaded["activation"]["enabled_roles"], ["repository_reviewer"])
+
+        maker_only = active_config(self.config, ["scoped_maker"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(maker_only), encoding="utf-8")
+            with self.assertRaisesRegex(worker.WorkerError, "reviewer-first"):
+                worker.load_config(path)
+
+    def test_activation_window_and_role_are_enforced_at_runtime(self):
+        active = active_config(self.config)
+        with mock.patch.object(worker.bridge, "exact_commit", return_value="a" * 40):
+            with self.assertRaisesRegex(worker.WorkerError, "outside its approved"):
+                worker.require_activation(
+                    active,
+                    {"U2_EXECUTOR_TRUSTED_SHA": "a" * 40},
+                    dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1),
+                )
+        worker.require_role_activation(active, "repository_reviewer")
+        with self.assertRaisesRegex(worker.WorkerError, "not enabled"):
+            worker.require_role_activation(active, "scoped_maker")
 
     def test_scoped_maker_cannot_modify_the_public_executor_repository(self):
         request = work_request()
@@ -237,6 +280,13 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         request["read_paths"] = ["services/model/.env.local"]
         request = sign_request(request)
         with self.assertRaisesRegex(worker.WorkerError, "credential paths"):
+            worker.validate_request(request, self.config, NOW)
+
+    def test_sensitive_dotenv_write_scope_is_rejected_at_request_boundary(self):
+        request = work_request()
+        request["allowed_paths"] = ["services/model/.env.local"]
+        request = sign_request(request)
+        with self.assertRaisesRegex(worker.WorkerError, "credential path"):
             worker.validate_request(request, self.config, NOW)
 
     def test_claude_settings_directory_read_scope_is_rejected(self):
@@ -578,6 +628,25 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(worker.WorkerError, "UTF-8 text"):
                 worker.validate_postconditions(repository.root, request, self.config, result)
 
+    def test_maker_untracked_symlink_is_rejected_before_content_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = GitRepository(directory)
+            request = repository.maker_request()
+            request["allowed_paths"] = ["services/model/NEW.md"]
+            request["read_paths"] = ["services/model/**"]
+            target = repository.root / "services/model/NEW.md"
+            target.symlink_to(repository.root / "OUTSIDE.md")
+            result = {
+                "status": "DONE",
+                "summary": "Created a file.",
+                "changed_paths_claimed": ["services/model/NEW.md"],
+                "verification_requested": [],
+                "residual_risk": [],
+                "decision_required": None,
+            }
+            with self.assertRaisesRegex(worker.WorkerError, "symlink"):
+                worker.validate_postconditions(repository.root, request, self.config, result)
+
     def test_maker_cannot_hide_partial_edits_behind_blocked_status(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = GitRepository(directory)
@@ -655,9 +724,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             worker.run(args)
 
     def test_run_denies_active_config_when_running_sha_is_not_user_trusted(self):
-        active = copy.deepcopy(self.config)
-        active["status"] = "approved_active"
-        active["activation"]["enabled"] = True
+        active = active_config(self.config)
         args = argparse.Namespace(
             repo=Path("/not/read"),
             request=Path("/not/read/request.json"),
@@ -690,9 +757,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             os.chmod(request_path, 0o600)
             output_path = state / "output.json"
             ledger = worker.bridge.shared_ledger_path(repository.root)
-            active = copy.deepcopy(self.config)
-            active["status"] = "approved_active"
-            active["activation"]["enabled"] = True
+            active = active_config(self.config)
             trusted = git(worker.ROOT, "rev-parse", "HEAD")
             review = {
                 "verdict": "APPROVE",
