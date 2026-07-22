@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "f8d807b936fd226dd18616e78505d8df486f2dcd",
+  "head_sha": "89c0a36632e0977098ea97f4e7383a080a04d889",
+  "diff_sha256": "d125bd8ddf47f19114674326e9349bfa4b6a40ad3b3f25adfbcad4303adee5ee",
+  "task_profile": "standard",
+  "requested_model": "claude-opus-4-8",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "APPROVE",
+    "summary": "The change adds a deterministic first-stage U2 Reviewer controller with a private, owner-only queue gated by an attended Ed25519 release signature. Authority separation is sound: run-next receives only the pinned approval public key while the private signing key is used solely by the attended release command and is excluded from the worker child environment. The controller enforces Reviewer-only role, one-operation cap, positive and at-most-seven-day windows, dependency-cycle detection, fail-closed failure handling with no auto-retry or source writes, and rebinds results to the reserved request, repository and target Head. Config re-validation after the model run guards against mid-run drift. The branch-pattern relaxation for Reviewers is bounded by an explicit forbidden protected-base list and preserved Maker restriction. Tests exercise the key claims. No open P0/P1/P2 findings.",
+    "findings": [
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "release_is_current caps operations by counting model_reserved events, and run-next reserves inside a locked ledger, but a crash between reserving the request and marking failure could leave one reserved slot consumed without progress. This is fail-closed (no auto-retry, item stays running or failed) and bounded to a single operation, so residual only."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "The Reviewer branch pattern was broadened from a claude/ prefix to any leading alphanumeric segment. Protection relies on the explicit forbidden_reviewer_branches list containing only main and master plus base/target SHA pinning; other protected long-lived branches are not centrally enumerated. Reviewer is read-only and never commits, so impact is bounded."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "Approval private key is never placed in the unattended runtime: child_environment excludes both the controller HMAC key and the approval public-key path, and run-next/release require the pinned public-key digest match, preventing an unattended scheduler from minting a release signature."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "Fail-closed behavior is proven: malformed or failing worker output routes to finalize_failure which sets state failed with null result, appends a run_failed event, and never authorizes retry, source write, or integration."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "Documentation claims of role limitation and single-operation cap are backed by validate_queue enforcing repository_reviewer-only items, allowed_roles of exactly repository_reviewer, and maximum_operations of exactly one, with tests asserting rejection of scoped_maker and of a two-operation cap."
+      }
+    ],
+    "verification": [
+      "run-next re-validates trusted config path, activation, Reviewer role, release signature and window, then reserves exactly one operation under a ledger lock.",
+      "child_environment excludes the controller signing key and the approval public-key path from the Claude child process.",
+      "load_config requires an active approver public-key pin and rejects a paused config that pins one.",
+      "worker.run reloads config post model call and denies if it changed, plus re-checks activation and role.",
+      "untracked-output inspection now uses O_NOFOLLOW open, size cap against maximum_diff_bytes, and post-read device/inode re-check to resist TOCTOU and symlink swaps.",
+      "Tests confirm Reviewer accepts a cross-family branch but rejects a protected base, and that release binds the immutable work manifest so objective tampering fails verification."
+    ],
+    "requirement_coverage": [
+      "Credential exposure avoided by excluding signing and approval-path variables from the child and keeping the private approval key attended-only.",
+      "Budget bypass prevented via one-operation model_reserved counting plus preserved repository-wide model-call budget dependency.",
+      "Missing fail-closed behavior covered: crashes or malformed results leave work running or failed with no automatic retry or write.",
+      "Unsafe automation constrained: controller never branches, commits, pushes, opens a PR, merges, deploys, or clears pause.",
+      "Unsupported claims checked against enforcement code for role, window, operation cap and key separation."
+    ],
+    "residual_risk": [
+      "A crash after reservation but before completion consumes the single operation slot; bounded and fail-closed, requires attended re-approval.",
+      "Broadened Reviewer branch pattern relies on an explicit protected-base denylist rather than an allowlist, but Reviewer remains read-only."
+    ]
+  }
+}

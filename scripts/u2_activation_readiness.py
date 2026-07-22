@@ -57,6 +57,13 @@ def assess(
     if not controller_key_available:
         blockers.append("CONTROLLER_KEY_UNAVAILABLE")
 
+    approver_public_key_available = False
+    try:
+        worker.approval_public_key_bytes(config, source)
+        approver_public_key_available = True
+    except worker.WorkerError:
+        blockers.append("APPROVER_PUBLIC_KEY_UNAVAILABLE_OR_UNPINNED")
+
     reviewer_only = activation.get("enabled_roles") == ["repository_reviewer"]
     if config["status"] != "approved_active" or activation.get("enabled") is not True:
         blockers.append("REVIEWER_ACTIVATION_PACKET_NOT_INSTALLED")
@@ -79,12 +86,13 @@ def assess(
             "local_runtime_private": local_runtime_private,
             "trusted_sha_matches": trusted_sha_matches,
             "controller_key_available": controller_key_available,
+            "approver_public_key_available": approver_public_key_available,
             "reviewer_only_activation": reviewer_only,
         },
         "first_activation_target": {
             "enabled_roles": ["repository_reviewer"],
             "scoped_maker_enabled": False,
-            "maximum_window_days": 7,
+            "maximum_window_days": worker.MAX_ACTIVATION_WINDOW_DAYS,
         },
         "blockers": blockers,
         "claim_boundary": {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import tempfile
@@ -21,6 +22,7 @@ SPEC.loader.exec_module(readiness)
 NOW = dt.datetime(2026, 7, 22, 12, 0, tzinfo=dt.timezone.utc)
 SHA = "a" * 40
 KEY = "controller-key-that-is-longer-than-thirty-two-bytes"
+PUBLIC_KEY = b"test-pinned-public-key"
 
 
 def active_config() -> dict:
@@ -35,6 +37,7 @@ def active_config() -> dict:
             "expires_at": "2026-07-23T11:00:00Z",
         }
     )
+    value["approver"]["public_key_sha256"] = hashlib.sha256(PUBLIC_KEY).hexdigest()
     return value
 
 
@@ -61,10 +64,13 @@ class ActivationReadinessTests(unittest.TestCase):
 
     def test_exact_reviewer_only_packet_can_be_ready(self):
         with tempfile.TemporaryDirectory() as directory:
+            public_key = Path(directory) / "approval-public.pem"
+            public_key.write_bytes(PUBLIC_KEY)
             path = self.write_config(directory, active_config())
             environment = {
                 "U2_EXECUTOR_TRUSTED_SHA": SHA,
                 "TREEXCHANGE_U2_CONTROLLER_KEY": KEY,
+                "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_PATH": str(public_key),
             }
             with mock.patch.object(readiness.bridge, "exact_commit", return_value=SHA):
                 with mock.patch.object(readiness.shutil, "which", return_value="/usr/bin/claude"):
@@ -77,16 +83,37 @@ class ActivationReadinessTests(unittest.TestCase):
         config = active_config()
         config["activation"]["enabled_roles"].append("scoped_maker")
         with tempfile.TemporaryDirectory() as directory:
+            public_key = Path(directory) / "approval-public.pem"
+            public_key.write_bytes(PUBLIC_KEY)
             path = self.write_config(directory, config)
             environment = {
                 "U2_EXECUTOR_TRUSTED_SHA": SHA,
                 "TREEXCHANGE_U2_CONTROLLER_KEY": KEY,
+                "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_PATH": str(public_key),
             }
             with mock.patch.object(readiness.bridge, "exact_commit", return_value=SHA):
                 with mock.patch.object(readiness.shutil, "which", return_value="/usr/bin/claude"):
                     with mock.patch.object(readiness.bridge, "require_local_claude_runtime"):
                         result = readiness.assess(path, environ=environment, now=NOW)
         self.assertIn("INITIAL_MAKER_ROLE_MUST_REMAIN_DISABLED", result["blockers"])
+
+    def test_ready_packet_rejects_a_public_key_that_misses_the_approved_pin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            public_key = Path(directory) / "approval-public.pem"
+            public_key.write_bytes(b"different-public-key")
+            path = self.write_config(directory, active_config())
+            environment = {
+                "U2_EXECUTOR_TRUSTED_SHA": SHA,
+                "TREEXCHANGE_U2_CONTROLLER_KEY": KEY,
+                "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_PATH": str(public_key),
+            }
+            with mock.patch.object(readiness.bridge, "exact_commit", return_value=SHA):
+                with mock.patch.object(readiness.shutil, "which", return_value="/usr/bin/claude"):
+                    with mock.patch.object(readiness.bridge, "require_local_claude_runtime"):
+                        result = readiness.assess(path, environ=environment, now=NOW)
+        self.assertIn(
+            "APPROVER_PUBLIC_KEY_UNAVAILABLE_OR_UNPINNED", result["blockers"]
+        )
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ MAKER_SCHEMA_PATH = ROOT / "schemas/u2-maker-output.schema.json"
 REVIEW_SCHEMA_PATH = ROOT / "schemas/u1-review-output.schema.json"
 SCOPED_MCP_PATH = ROOT / "scripts/scoped_repository_mcp.py"
 MCP_SERVER_NAME = "treexchange_repo"
+MAX_ACTIVATION_WINDOW_DAYS = 7
 MCP_COMMON_READ_TOOLS = (
     f"mcp__{MCP_SERVER_NAME}__read_file",
     f"mcp__{MCP_SERVER_NAME}__list_files",
@@ -66,7 +67,8 @@ REQUEST_FIELDS = {
 REQUEST_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{7,95}$")
 NONCE_RE = re.compile(r"^[a-f0-9]{32,64}$")
 SIGNATURE_RE = re.compile(r"^[a-f0-9]{64}$")
-BRANCH_RE = re.compile(r"^claude/[A-Za-z0-9._/-]{1,120}$")
+REVIEW_BRANCH_RE = re.compile(r"^(?:agent|claude|codex)/[A-Za-z0-9._/-]{1,120}$")
+MAKER_BRANCH_RE = re.compile(r"^claude/[A-Za-z0-9._/-]{1,120}$")
 CONTROL_EVIDENCE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{7,95}$")
 SENSITIVE_READ_PATHS = (
     ".git/**",
@@ -122,6 +124,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
         "status",
         "activation",
         "controller",
+        "approver",
         "repositories",
         "roles",
         "limits",
@@ -179,6 +182,20 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
         or controller["minimum_key_bytes"] < 32
     ):
         fail("U2 controller trust contract is invalid", INVALID)
+    approver = value.get("approver")
+    if (
+        not isinstance(approver, dict)
+        or set(approver)
+        != {"key_id", "public_key_path_environment", "public_key_sha256"}
+        or approver.get("key_id") != "u2-attended-approval-v1"
+        or approver.get("public_key_path_environment")
+        != "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_PATH"
+        or (
+            approver.get("public_key_sha256") is not None
+            and SIGNATURE_RE.fullmatch(approver["public_key_sha256"]) is None
+        )
+    ):
+        fail("U2 attended approver trust contract is invalid", INVALID)
     activation = value.get("activation")
     activation_fields = {
         "enabled",
@@ -216,10 +233,14 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
             "requires_budget_reservation_id": True,
         }:
             fail("paused U2 activation fields must remain empty and false", INVALID)
+        if approver["public_key_sha256"] is not None:
+            fail("paused U2 approver key pin must remain empty", INVALID)
     elif status == "approved_active":
         enabled_roles = activation.get("enabled_roles")
         if activation.get("enabled") is not True:
             fail("active U2 config must enable its bounded roles", INVALID)
+        if not isinstance(approver["public_key_sha256"], str):
+            fail("active U2 config requires an attended approver public-key pin", INVALID)
         if (
             not isinstance(enabled_roles, list)
             or not enabled_roles
@@ -232,7 +253,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
             fail("active U2 config requires an approval identity", INVALID)
         approved = parse_utc(activation.get("approved_at", ""), "approved_at")
         expires = parse_utc(activation.get("expires_at", ""), "expires_at")
-        if not dt.timedelta(0) < expires - approved <= dt.timedelta(days=7):
+        if not dt.timedelta(0) < expires - approved <= dt.timedelta(days=MAX_ACTIVATION_WINDOW_DAYS):
             fail("U2 activation window must be positive and at most seven days", INVALID)
     else:
         fail("U2 status is outside the activation contract", INVALID)
@@ -244,13 +265,58 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
     ):
         fail("U2 protected Maker path contract is invalid", INVALID)
     if value.get("git") != {
-        "required_branch_prefix": "claude/",
+        "required_maker_branch_prefix": "claude/",
+        "allowed_reviewer_branch_prefixes": ["agent/", "claude/", "codex/"],
         "require_clean_start": True,
         "forbid_commit_during_model_run": True,
         "forbid_push": True,
         "forbid_merge": True,
     }:
         fail("U2 Git boundary drifted", INVALID)
+    return value
+
+
+def require_trusted_config_path(path: Path) -> None:
+    try:
+        supplied = path.expanduser().resolve(strict=True)
+        trusted = CONFIG_PATH.resolve(strict=True)
+    except OSError:
+        fail("U2 trusted worker config is unavailable")
+    if supplied != trusted:
+        fail("U2 execution requires the exact checked-in worker config")
+
+
+def approval_public_key_bytes(
+    config: dict[str, Any], environ: Mapping[str, str] | None = None
+) -> bytes:
+    source = os.environ if environ is None else environ
+    approver = config["approver"]
+    configured = source.get(approver["public_key_path_environment"])
+    if not isinstance(configured, str) or not configured:
+        fail("U2 attended approver public key is unavailable")
+    path = Path(configured).expanduser()
+    try:
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            fail("U2 attended approver public key must be a regular non-symlink file")
+        if metadata.st_size > 16_384:
+            fail("U2 attended approver public key is unexpectedly large")
+        value = path.read_bytes()
+        final = path.lstat()
+    except OSError:
+        fail("U2 attended approver public key is unavailable")
+    if (
+        not stat.S_ISREG(final.st_mode)
+        or final.st_dev != metadata.st_dev
+        or final.st_ino != metadata.st_ino
+        or final.st_size != metadata.st_size
+    ):
+        fail("U2 attended approver public key changed during inspection")
+    expected = approver.get("public_key_sha256")
+    if not isinstance(expected, str) or not hmac.compare_digest(
+        hashlib.sha256(value).hexdigest(), expected
+    ):
+        fail("U2 attended approver public key does not match the active pin")
     return value
 
 
@@ -390,15 +456,21 @@ def validate_request(
     if request.get("repository") not in config["roles"][role].get("repositories", []):
         fail("request repository is not allowed for the selected worker role", INVALID)
     branch = request.get("branch")
+    branch_pattern = REVIEW_BRANCH_RE if role == "repository_reviewer" else MAKER_BRANCH_RE
     if (
         not isinstance(branch, str)
-        or not BRANCH_RE.fullmatch(branch)
+        or not branch_pattern.fullmatch(branch)
         or "//" in branch
         or any(part in {"", ".", ".."} for part in branch.split("/"))
         or branch.endswith(".")
         or branch.endswith("/")
     ):
         fail("request branch is invalid", INVALID)
+    if role == "repository_reviewer" and not any(
+        branch.startswith(prefix)
+        for prefix in config["git"]["allowed_reviewer_branch_prefixes"]
+    ):
+        fail("repository reviewer must target an approved feature-branch family", INVALID)
     for name in ("base_sha", "target_sha"):
         if not u1_executor.SHA_RE.fullmatch(request.get(name, "")):
             fail(f"{name} must be an exact commit SHA", INVALID)
@@ -461,8 +533,8 @@ def validate_request(
         ):
             fail("scoped maker request intersects a protected path", INVALID)
         if any(
-            PurePosixPath(scope).name == ".env"
-            or PurePosixPath(scope).name.startswith(".env.")
+            PurePosixPath(scope).name.lower() == ".env"
+            or PurePosixPath(scope).name.lower().startswith(".env.")
             for scope in allowed_paths
         ):
             fail("scoped maker request intersects a credential path", INVALID)
@@ -662,7 +734,8 @@ def permission_settings() -> dict[str, Any]:
 
 def child_environment(config: dict[str, Any]) -> dict[str, str]:
     signing_key = config["controller"]["key_environment"]
-    return bridge.claude_child_environment(excluded={signing_key})
+    approval_public_path = config["approver"]["public_key_path_environment"]
+    return bridge.claude_child_environment(excluded={signing_key, approval_public_path})
 
 
 def scoped_mcp_config(
@@ -923,18 +996,50 @@ def working_tree_evidence(repo: Path, config: dict[str, Any]) -> tuple[list[str]
     payload = bytearray(raw_diff)
     for relative in untracked:
         target = repo / relative
+        descriptor: int | None = None
         try:
-            metadata = target.lstat()
+            if stat.S_ISLNK(target.lstat().st_mode):
+                fail("Claude Maker created or changed a symlink; worktree is quarantined")
+            flags = os.O_RDONLY
+            if hasattr(os, "O_NONBLOCK"):
+                flags |= os.O_NONBLOCK
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(target, flags)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                fail("Claude Maker untracked output must be a single regular file")
+            if metadata.st_size > config["limits"]["maximum_diff_bytes"]:
+                fail("Claude Maker change exceeds the U2 diff byte cap")
+            data_buffer = bytearray()
+            while len(data_buffer) <= config["limits"]["maximum_diff_bytes"]:
+                chunk = os.read(
+                    descriptor,
+                    config["limits"]["maximum_diff_bytes"] + 1 - len(data_buffer),
+                )
+                if not chunk:
+                    break
+                data_buffer.extend(chunk)
+            data = bytes(data_buffer)
+            final_metadata = target.lstat()
+            if (
+                not stat.S_ISREG(final_metadata.st_mode)
+                or final_metadata.st_dev != metadata.st_dev
+                or final_metadata.st_ino != metadata.st_ino
+                or final_metadata.st_nlink != 1
+                or final_metadata.st_size != metadata.st_size
+            ):
+                fail("Claude Maker untracked output changed during inspection")
         except OSError:
             fail("Claude Maker untracked output could not be inspected")
-        if stat.S_ISLNK(metadata.st_mode):
-            fail("Claude Maker created or changed a symlink; worktree is quarantined")
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            fail("Claude Maker untracked output must be a single regular file")
-        try:
-            data = target.read_bytes()
-        except OSError:
-            fail("Claude Maker untracked output could not be inspected")
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+        if len(data) > config["limits"]["maximum_diff_bytes"]:
+            fail("Claude Maker change exceeds the U2 diff byte cap")
         if b"\x00" in data:
             fail("initial U2 Maker accepts only UTF-8 text changes")
         payload.extend(f"\nUNTRACKED:{relative}\n".encode("utf-8"))
@@ -1065,6 +1170,7 @@ def validate_review_receipt(
 
 
 def run(args: argparse.Namespace) -> None:
+    require_trusted_config_path(args.config)
     config = load_config(args.config)
     require_activation(config)
     repo = args.repo.resolve()
@@ -1106,6 +1212,11 @@ def run(args: argparse.Namespace) -> None:
         wrapper, result = invoke_claude(
             repo, request, config, prompt, schema, model, review_receipt
         )
+        post_config = load_config(args.config)
+        if post_config != config:
+            fail("U2 activation config changed during the model run")
+        require_activation(post_config)
+        require_role_activation(post_config, request["role"])
         if review_receipt is not None:
             validate_review_receipt(
                 repo,

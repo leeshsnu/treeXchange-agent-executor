@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "pull_request": 8,
+  "reviewed_head": "89c0a36632e0977098ea97f4e7383a080a04d889",
+  "opus_4_8_verdict": "APPROVE",
+  "fable_5_verdict": "CHANGES_REQUESTED",
+  "codex_disposition": "CHANGES_APPLIED",
+  "findings": [
+    {
+      "source": "Fable 5",
+      "reported_severity": "P2",
+      "topic": "release replay through mutable queue rewind",
+      "decision": "VALID_DEFENSE_IN_DEPTH",
+      "action": "Added an atomic one-use release claim outside the mutable queue in owner-only shared Git state, plus a replay test and an explicit same-user trust-boundary statement."
+    },
+    {
+      "source": "Fable 5",
+      "reported_severity": "P2",
+      "topic": "null worker ledger and unreserved budget identifier",
+      "decision": "FALSE_POSITIVE_WITH_CLARITY_FIX",
+      "action": "Confirmed that a null assertion resolves to the repository-wide ledger and that worker reservation consumes request id, nonce, budget id, window and daily budgets before Claude. The controller now passes the exact shared ledger path and an integration test exercises the real admission path."
+    },
+    {
+      "source": "Fable 5 and Opus 4.8",
+      "reported_severity": "P3",
+      "topic": "broad Reviewer feature-branch pattern",
+      "decision": "VALID_HARDENING",
+      "action": "Restricted Reviewer targets to agent/, claude/ and codex/ feature-branch families."
+    },
+    {
+      "source": "Fable 5",
+      "reported_severity": "P3",
+      "topic": "named temporary approval-key copy",
+      "decision": "VALID_HARDENING",
+      "action": "Changed OpenSSL signing to anonymous inherited file descriptors so no named private-key copy is created."
+    },
+    {
+      "source": "Fable 5",
+      "reported_severity": "P3",
+      "topic": "untracked-file final size recheck",
+      "decision": "VALID_HARDENING",
+      "action": "Added final size identity and direct bounded-read length enforcement."
+    }
+  ],
+  "activation_changed": false,
+  "pause_released": false
+}
