@@ -125,15 +125,20 @@ duplicate-key JSON and schema drift are preserved as feedback but force
 local subscription-based U2 loop. It does not weaken or replace the no-tools U1
 review bridge. It defines two explicit execution profiles:
 
-- `repository_reviewer` receives `Read`, `Glob`, and `Grep` definitions. Claude
-  Code permission rules use its documented repository-relative path syntax;
-  Read approval is restricted to signed scopes, shell, network,
-  MCP, subagent and edit tools are denied, and any resulting worktree change
-  quarantines the run.
+- `repository_reviewer` receives only the trusted local `read_file`,
+  `list_files`, and `search_text` tools. Claude's built-in file tools are
+  disabled. The local tool server enforces signed repository-relative scopes on
+  every call; shell, network, third-party MCP, subagent and edit tools are
+  unavailable, and any resulting worktree change quarantines the run.
 - `scoped_maker` is available only for the private Season 2 repository. It may
-  read signed scopes and edit signed exact low-risk files with `Read`, `Glob`,
-  `Grep`, `Edit`, and `Write`. Shell, network, Git, GitHub, MCP, subagent and protected
-  policy paths remain unavailable. The wrapper rejects out-of-scope changes,
+  inspect signed scopes with the same three local tools and receives
+  `write_file` and `replace_text` only for signed exact low-risk files. The
+  server rejects traversal, sensitive paths, links, oversized or non-UTF-8
+  content, credential-shaped content, and local untracked files before access.
+  A fixed trusted `git ls-files` inventory allows repository-tracked context plus
+  only the exact signed Maker targets. Shell, network, model-controlled Git,
+  GitHub, third-party MCP, subagent and protected policy paths remain
+  unavailable. The wrapper then independently rejects out-of-scope changes,
   symlinks, binary or oversized changes, credential-shaped content, commit or
   branch drift, incomplete `BLOCKED` edits, and model path claims that differ
   from machine-derived Git evidence.
@@ -152,11 +157,12 @@ minimal environment; controller and GitHub credentials, proxy variables and
 additional CA bundles are removed while the local subscription OAuth credential
 may be inherited.
 
-The worker remains paused until an attended activation change also proves the
-installed Claude Code version's effective Read, Glob, Grep, Edit, and Write
-permission behavior against harmless in-scope and out-of-scope sentinel files.
-Static command construction alone is not treated as proof of runtime permission
-semantics.
+The worker no longer relies on Claude Code's built-in Read/Edit path-rule
+precedence for repository isolation. The local MCP server is part of the pinned
+executor source and its scope behavior is covered by direct traversal,
+sensitive-file, untracked-file, symlink, hard-link, read-only-role and exact-write tests. The
+checked-in worker nevertheless remains paused pending a separately reviewed
+activation change.
 
 The checked-in U2 config is `proposed_paused`. `verify-request` may prove that a
 signed request and clean worktree are coherent, but `run` denies before a model

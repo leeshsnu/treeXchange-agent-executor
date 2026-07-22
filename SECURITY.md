@@ -150,17 +150,25 @@ must separately be `approved_active`, and the current checked-in state is
 match its running commit to the user's external `U2_EXECUTOR_TRUSTED_SHA`; every
 signed request binds distinct pause-release and budget-reservation evidence.
 
-Tool permission is role-specific and deny-first. The read-only Reviewer cannot
-edit. The Maker can edit only signed, repository-relative low-risk paths in an
-already-created clean `claude/` worktree. Neither profile receives Bash, web,
-GitHub, MCP, plugin or subagent tools, and bypass/auto permission modes are
-disabled. The CLI receives one available-tool list plus documented
-repository-relative Read/Edit permission rules; no second command-line allow
-surface is added. Claude never receives the controller key, a GitHub write
-token, proxy routing, or additional CA-bundle overrides.
-Activation requires a separate attended change and runtime permission probe
-against harmless allowed and denied sentinel files for the installed Claude Code
-version; static flag construction is not accepted as sufficient proof.
+Tool permission is role-specific and deny-first. All Claude built-in file,
+shell, web, GitHub, plugin and subagent tools are disabled. `--strict-mcp-config`
+admits only the pinned local `scoped_repository_mcp.py` server; no third-party or
+network MCP server is loaded. The read-only Reviewer receives three scoped read
+operations. The Maker adds two write operations that accept only signed exact
+low-risk files in an already-created clean `claude/` worktree. The server
+revalidates canonical repository containment, signed scope, sensitive paths,
+tracked-file inventory, links, byte limits, UTF-8 and credential patterns for
+every call. A fixed trusted `git ls-files` subprocess builds the inventory;
+Claude cannot supply or alter that command. Claude never
+receives the controller key, a GitHub write token, proxy routing, or additional
+CA-bundle overrides.
+
+Repository confidentiality and write scope therefore do not depend on Claude
+Code's built-in Read/Edit permission-rule precedence. Direct server tests cover
+traversal, out-of-scope and sensitive reads, symlink escape, reviewer writes,
+untracked local reads, hard links, credential-shaped writes and exact Maker edits. The existing trusted
+controller still derives Git postconditions after the model returns, providing
+an independent second boundary before any result can continue.
 
 Permission rules are backed by machine-derived postconditions. After the model
 returns, the wrapper rechecks the exact branch and commit, derives tracked and

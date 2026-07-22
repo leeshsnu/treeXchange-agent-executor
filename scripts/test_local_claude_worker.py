@@ -242,37 +242,46 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             work_request("repository_reviewer"), self.config, NOW
         )
         command = worker.claude_command(
-            request, {"type": "object"}, worker.bridge.DEFAULT_MODEL
+            Path("/tmp/repo"),
+            request,
+            self.config,
+            {"type": "object"},
+            worker.bridge.DEFAULT_MODEL,
         )
-        self.assertEqual(command[command.index("--tools") + 1], "Read,Glob,Grep")
-        self.assertNotIn("Edit", command[command.index("--tools") + 1])
-        self.assertNotIn("Write", command[command.index("--tools") + 1])
+        self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertNotIn("--dangerously-skip-permissions", command)
-        self.assertNotIn("--allowedTools", command)
+        allowed = command[command.index("--allowedTools") + 1].split(",")
+        self.assertEqual(tuple(allowed), worker.MCP_READ_TOOLS)
+        self.assertFalse(any("write" in name or "replace" in name for name in allowed))
+        mcp_config = json.loads(command[command.index("--mcp-config") + 1])
+        server = mcp_config["mcpServers"][worker.MCP_SERVER_NAME]
+        self.assertEqual(server["command"], sys.executable)
+        self.assertIn(str(worker.SCOPED_MCP_PATH), server["args"])
+        self.assertIn('["services/model/**"]', server["args"])
+        self.assertIn("[]", server["args"])
         settings = json.loads(command[command.index("--settings") + 1])
-        self.assertIn("Bash", settings["permissions"]["deny"])
-        self.assertIn("Edit(.git/**)", settings["permissions"]["deny"])
-        self.assertIn("Read(services/model/**)", settings["permissions"]["allow"])
-        self.assertIn("Read(~/.claude/**)", settings["permissions"]["deny"])
-        self.assertNotIn("Glob", settings["permissions"]["allow"])
-        self.assertNotIn("Grep", settings["permissions"]["allow"])
+        for tool in ("Bash", "Read", "Glob", "Grep", "Edit", "Write"):
+            self.assertIn(tool, settings["permissions"]["deny"])
+        self.assertEqual(settings["permissions"]["allow"], [])
         self.assertTrue(settings["sandbox"]["failIfUnavailable"])
 
     def test_maker_tools_allow_only_signed_edit_paths_without_shell(self):
         request = worker.validate_request(work_request(), self.config, NOW)
         command = worker.claude_command(
-            request, {"type": "object"}, worker.bridge.DEFAULT_MODEL
+            Path("/tmp/repo"),
+            request,
+            self.config,
+            {"type": "object"},
+            worker.bridge.DEFAULT_MODEL,
         )
-        self.assertEqual(
-            command[command.index("--tools") + 1], "Read,Glob,Grep,Edit,Write"
-        )
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        allowed = command[command.index("--allowedTools") + 1].split(",")
+        self.assertEqual(tuple(allowed), worker.MCP_READ_TOOLS + worker.MCP_WRITE_TOOLS)
+        mcp_config = json.loads(command[command.index("--mcp-config") + 1])
+        args = mcp_config["mcpServers"][worker.MCP_SERVER_NAME]["args"]
+        self.assertIn('["services/model/HANDOFF_NEEDED.md"]', args)
         settings = json.loads(command[command.index("--settings") + 1])
-        self.assertIn(
-            "Edit(services/model/HANDOFF_NEEDED.md)",
-            settings["permissions"]["allow"],
-        )
         self.assertIn("Bash", settings["permissions"]["deny"])
-        self.assertNotIn("Bash", command[command.index("--tools") + 1])
         self.assertEqual(
             command[command.index("--permission-mode") + 1], "dontAsk"
         )
@@ -333,6 +342,22 @@ class LocalClaudeWorkerTests(unittest.TestCase):
                 must_exist=True,
             )
             self.assertEqual(resolved, request_path.resolve())
+
+    def test_world_readable_private_request_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = GitRepository(directory)
+            state = repository.root / ".agent-state"
+            state.mkdir()
+            request_path = state / "request.json"
+            request_path.write_text("{}", encoding="utf-8")
+            os.chmod(request_path, 0o644)
+            with self.assertRaisesRegex(worker.WorkerError, "owner-readable only"):
+                worker.private_agent_path(
+                    repository.root,
+                    Path(".agent-state/request.json"),
+                    "request",
+                    must_exist=True,
+                )
 
     def test_maker_ignored_target_or_symlink_scope_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

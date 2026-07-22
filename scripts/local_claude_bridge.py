@@ -528,11 +528,15 @@ def classify_claude_failure(stderr: str) -> str:
         for token in ("eperm", "eacces", "operation not permitted", "permission denied")
     ):
         return "local_filesystem_denied"
-    if any(token in value for token in ("429", "rate limit", "usage limit", "quota")):
+    if any(token in value for token in ("rate limit", "usage limit", "quota")) or re.search(
+        r"\b(?:http(?: status)?|status|code)\s*[:=]?\s*429\b", value
+    ):
         return "usage_or_rate_limit"
     if any(
         token in value
-        for token in ("401", "unauthorized", "unauthenticated", "not logged in", "login required")
+        for token in ("unauthorized", "unauthenticated", "not logged in", "login required")
+    ) or re.search(
+        r"\b(?:http(?: status)?|status|code)\s*[:=]?\s*401\b", value
     ):
         return "authentication_unavailable"
     if any(token in value for token in ("model not found", "invalid model", "unknown model")):

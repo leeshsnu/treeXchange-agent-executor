@@ -240,6 +240,7 @@ class BridgeTests(unittest.TestCase):
             "401 unauthorized; login required secret-value": "authentication_unavailable",
             "invalid model secret-value": "model_unavailable",
             "EPERM operation not permitted at Timeout secret-value": "local_filesystem_denied",
+            "debug file line 429 secret-value": "unclassified_runtime_failure",
             "unexpected runtime failure secret-value": "unclassified_runtime_failure",
         }
         for stderr, expected in cases.items():

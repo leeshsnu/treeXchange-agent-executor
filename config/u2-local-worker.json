@@ -23,14 +23,14 @@
         "leeshsnu/treeXchange-agent-executor",
         "leeshsnu/treeXchange-season2"
       ],
-      "tools": ["Read", "Glob", "Grep"],
+      "tools": ["read_file", "list_files", "search_text"],
       "may_write_source": false,
       "may_run_shell": false,
       "may_use_network_tools": false
     },
     "scoped_maker": {
       "repositories": ["leeshsnu/treeXchange-season2"],
-      "tools": ["Read", "Glob", "Grep", "Edit", "Write"],
+      "tools": ["read_file", "list_files", "search_text", "write_file", "replace_text"],
       "may_write_source": true,
       "may_run_shell": false,
       "may_use_network_tools": false
