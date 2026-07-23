@@ -372,7 +372,7 @@ def normalize_scope_path(value: str, label: str) -> str:
     raw = value[:-3] if recursive else value
     if not raw or raw.startswith("/") or raw.endswith("/"):
         fail(f"{label} must be repository-relative", INVALID)
-    if "*" in raw or "?" in raw or "[" in raw:
+    if "*" in raw or "?" in raw:
         fail(f"{label} allows only exact paths or a trailing /**", INVALID)
     parts = PurePosixPath(raw).parts
     if not parts or any(part in {"", ".", ".."} for part in parts):

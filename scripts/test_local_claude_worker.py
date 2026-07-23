@@ -292,6 +292,16 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "exact writable file"):
             worker.validate_request(request, self.config, NOW)
 
+    def test_next_dynamic_route_is_a_valid_exact_maker_path(self):
+        request = work_request()
+        request["read_paths"] = ["apps/web/**"]
+        request["allowed_paths"] = ["apps/web/app/[...slug]/page.tsx"]
+        request = sign_request(request)
+        validated = worker.validate_request(request, self.config, NOW)
+        self.assertEqual(
+            validated["allowed_paths"], ["apps/web/app/[...slug]/page.tsx"]
+        )
+
     def test_sensitive_dotenv_read_scope_is_rejected(self):
         request = work_request("repository_reviewer")
         request["read_paths"] = ["services/model/.env.local"]
