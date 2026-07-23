@@ -461,6 +461,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             worker.bridge.DEFAULT_MODEL,
         )
         cli_schema = json.loads(command[command.index("--json-schema") + 1])
+        self.assertIn("$schema", schema)
         self.assertNotIn("$schema", cli_schema)
         self.assertEqual(command[command.index("--tools") + 1], "")
         allowed = command[command.index("--allowedTools") + 1].split(",")

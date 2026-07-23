@@ -11,19 +11,6 @@ python3 -m json.tool schemas/u1-review-output.schema.json >/dev/null
 python3 -m json.tool schemas/u1-maker-output.schema.json >/dev/null
 python3 -m json.tool schemas/u2-local-work-request.schema.json >/dev/null
 python3 -m json.tool schemas/u2-maker-output.schema.json >/dev/null
-python3 - <<'PY'
-import json
-from pathlib import Path
-
-for name in (
-    "u1-review-output.schema.json",
-    "u1-maker-output.schema.json",
-    "u2-maker-output.schema.json",
-):
-    schema = json.loads((Path("schemas") / name).read_text(encoding="utf-8"))
-    if "$schema" in schema:
-        raise SystemExit(f"{name} must omit the unsupported Claude CLI meta-schema")
-PY
 for review in reviews/*.json; do
   python3 -m json.tool "$review" >/dev/null
 done

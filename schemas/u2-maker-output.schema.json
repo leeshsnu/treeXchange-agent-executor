@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://treexchange.local/schemas/u2-maker-output.schema.json",
   "title": "treeXchange U2 Claude Maker result",
   "type": "object",

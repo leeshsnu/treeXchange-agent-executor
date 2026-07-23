@@ -45,6 +45,19 @@ def ledger_attempt(index, *, work_item="OPS-03", window="ops-03-window-01", day=
 
 
 class BridgeTests(unittest.TestCase):
+    def test_claude_cli_schema_strips_only_the_unsupported_meta_schema(self):
+        source = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://treexchange.local/example.json",
+            "type": "object",
+        }
+
+        result = bridge.claude_cli_schema(source)
+
+        self.assertNotIn("$schema", result)
+        self.assertEqual(result["$id"], source["$id"])
+        self.assertIn("$schema", source)
+
     def test_review_diff_uses_standard_bounded_context(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
         self.assertIn('"--unified=3"', source)
