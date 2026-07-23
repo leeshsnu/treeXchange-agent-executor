@@ -31,7 +31,7 @@ def active_config() -> dict:
     value["activation"].update(
         {
             "enabled": True,
-            "enabled_roles": ["repository_reviewer"],
+            "enabled_roles": ["repository_reviewer", "scoped_maker"],
             "approved_by": "user",
             "approved_at": "2026-07-22T11:00:00Z",
             "expires_at": "2026-07-23T11:00:00Z",
@@ -57,12 +57,12 @@ class ActivationReadinessTests(unittest.TestCase):
                 with mock.patch.object(readiness.bridge, "require_local_claude_runtime"):
                     result = readiness.assess(environ=environment, now=NOW)
         self.assertEqual(result["status"], "PAUSED_NOT_READY")
-        self.assertIn("REVIEWER_ACTIVATION_PACKET_NOT_INSTALLED", result["blockers"])
+        self.assertIn("U2_ACTIVATION_PACKET_NOT_INSTALLED", result["blockers"])
         rendered = json.dumps(result)
         self.assertNotIn(environment["TREEXCHANGE_U2_CONTROLLER_KEY"], rendered)
         self.assertFalse(result["claim_boundary"]["makes_model_call"])
 
-    def test_exact_reviewer_only_packet_can_be_ready(self):
+    def test_exact_maker_and_reviewer_packet_can_be_ready(self):
         with tempfile.TemporaryDirectory() as directory:
             public_key = Path(directory) / "approval-public.pem"
             public_key.write_bytes(PUBLIC_KEY)
@@ -76,12 +76,12 @@ class ActivationReadinessTests(unittest.TestCase):
                 with mock.patch.object(readiness.shutil, "which", return_value="/usr/bin/claude"):
                     with mock.patch.object(readiness.bridge, "require_local_claude_runtime"):
                         result = readiness.assess(path, environ=environment, now=NOW)
-        self.assertEqual(result["status"], "READY_FOR_FIRST_REVIEW")
+        self.assertEqual(result["status"], "READY_FOR_U2_WORK")
         self.assertEqual(result["blockers"], [])
 
-    def test_first_activation_rejects_enabling_maker(self):
+    def test_operational_activation_rejects_reviewer_only_mode(self):
         config = active_config()
-        config["activation"]["enabled_roles"].append("scoped_maker")
+        config["activation"]["enabled_roles"] = ["repository_reviewer"]
         with tempfile.TemporaryDirectory() as directory:
             public_key = Path(directory) / "approval-public.pem"
             public_key.write_bytes(PUBLIC_KEY)
@@ -95,7 +95,7 @@ class ActivationReadinessTests(unittest.TestCase):
                 with mock.patch.object(readiness.shutil, "which", return_value="/usr/bin/claude"):
                     with mock.patch.object(readiness.bridge, "require_local_claude_runtime"):
                         result = readiness.assess(path, environ=environment, now=NOW)
-        self.assertIn("INITIAL_MAKER_ROLE_MUST_REMAIN_DISABLED", result["blockers"])
+        self.assertIn("MAKER_AND_REVIEWER_ROLES_NOT_ENABLED", result["blockers"])
 
     def test_ready_packet_rejects_a_public_key_that_misses_the_approved_pin(self):
         with tempfile.TemporaryDirectory() as directory:

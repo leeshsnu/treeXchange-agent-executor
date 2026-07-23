@@ -204,6 +204,8 @@ class U2UserRunnerTests(unittest.TestCase):
                     "queue_id": "u2-runner-test-01",
                     "counts": {"planned": 1, "ready": 0},
                     "next_ready": True,
+                    "next_work_item_id": "OPS-RUNNER-01",
+                    "next_role": "scoped_maker",
                     "operations_reserved": 0,
                     "maximum_operations": 1,
                     "approval_digest": "a" * 64,
@@ -243,6 +245,8 @@ class U2UserRunnerTests(unittest.TestCase):
                     "queue_id": "u2-runner-test-02",
                     "counts": {"planned": 1, "ready": 0},
                     "next_ready": True,
+                    "next_work_item_id": "OPS-RUNNER-02",
+                    "next_role": "repository_reviewer",
                     "operations_reserved": 0,
                     "maximum_operations": 1,
                     "approval_digest": "b" * 64,
@@ -308,6 +312,64 @@ class U2UserRunnerTests(unittest.TestCase):
             "next_ready": False,
         }
         self.assertFalse(runner.actionable_queue(value))
+
+    def test_one_release_can_advance_distinct_work_items_without_retrying_either(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            inspections = iter(
+                [
+                    {
+                        "status": "released",
+                        "queue_id": "u2-runner-batch-01",
+                        "next_ready": True,
+                        "next_work_item_id": "OPS-BATCH-01",
+                        "next_role": "scoped_maker",
+                        "operations_reserved": 0,
+                        "maximum_operations": 2,
+                        "approval_digest": "c" * 64,
+                        "external_release_claimed": False,
+                    },
+                    {
+                        "status": "released",
+                        "queue_id": "u2-runner-batch-01",
+                        "next_ready": True,
+                        "next_work_item_id": "OPS-BATCH-02",
+                        "next_role": "repository_reviewer",
+                        "operations_reserved": 1,
+                        "maximum_operations": 2,
+                        "approval_digest": "c" * 64,
+                        "external_release_claimed": False,
+                    },
+                    {
+                        "status": "released",
+                        "queue_id": "u2-runner-batch-01",
+                        "next_ready": False,
+                        "next_work_item_id": None,
+                        "next_role": None,
+                        "operations_reserved": 2,
+                        "maximum_operations": 2,
+                        "approval_digest": "c" * 64,
+                        "external_release_claimed": False,
+                    },
+                ]
+            )
+            run_calls = 0
+
+            def command(args, **_kwargs):
+                nonlocal run_calls
+                if "inspect" in args:
+                    return completed(json.dumps(next(inspections)))
+                run_calls += 1
+                return completed('{"status":"WORK_COMPLETED"}')
+
+            with mock.patch.object(runner, "ROOT", fixture.executor):
+                first = runner.run_cycle(fixture.config(), command=command)
+                second = runner.run_cycle(fixture.config(), command=command)
+                third = runner.run_cycle(fixture.config(), command=command)
+            self.assertEqual(first["work_item_id"], "OPS-BATCH-01")
+            self.assertEqual(second["work_item_id"], "OPS-BATCH-02")
+            self.assertEqual(third, {"status": "IDLE", "attempted": False})
+            self.assertEqual(run_calls, 2)
 
 
 if __name__ == "__main__":

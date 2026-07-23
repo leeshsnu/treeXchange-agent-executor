@@ -163,20 +163,52 @@ def paused_queue(repository: ReviewRepository) -> dict:
     return value
 
 
-def active_config(repository: ReviewRepository) -> dict:
+def active_config(
+    repository: ReviewRepository, *, maker: bool = False
+) -> dict:
     value = copy.deepcopy(controller.worker.load_config())
     now = dt.datetime.now(dt.timezone.utc)
     value["status"] = "approved_active"
     value["activation"].update(
         {
             "enabled": True,
-            "enabled_roles": ["repository_reviewer"],
+            "enabled_roles": (
+                ["repository_reviewer", "scoped_maker"]
+                if maker
+                else ["repository_reviewer"]
+            ),
             "approved_by": "user",
             "approved_at": (now - dt.timedelta(minutes=1)).isoformat(),
             "expires_at": (now + dt.timedelta(hours=1)).isoformat(),
         }
     )
     value["approver"]["public_key_sha256"] = repository.approval_public_digest
+    return value
+
+
+def maker_queue(repository: ReviewRepository, state: str = "ready") -> dict:
+    git(repository.root, "switch", "-c", "claude/controller-maker-test")
+    value = released_queue(repository, state)
+    item = value["items"][0]
+    item.update(
+        {
+            "role": "scoped_maker",
+            "branch": "claude/controller-maker-test",
+            "base_sha": repository.head,
+            "target_sha": repository.head,
+            "objective": "Update the bounded model service documentation.",
+            "acceptance_criteria": ["Write the requested bounded text change."],
+            "read_paths": ["services/model/**"],
+            "allowed_paths": ["services/model/README.md"],
+        }
+    )
+    value["release"]["allowed_roles"] = ["scoped_maker"]
+    value["release"]["queue_digest"] = controller.approval_digest(value)
+    value["release"]["release_signature"] = base64.b64encode(
+        controller.ed25519_signature(
+            controller.release_payload(value), repository.approval_private
+        )
+    ).decode("ascii")
     return value
 
 
@@ -208,17 +240,26 @@ class U2ControllerTests(unittest.TestCase):
             with self.assertRaisesRegex(controller.ControllerError, "execution evidence"):
                 controller.validate_queue(invalid)
 
-    def test_initial_release_is_reviewer_only_and_single_operation(self):
+    def test_release_roles_and_operation_cap_match_the_signed_queue(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = ReviewRepository(directory)
             queue = released_queue(repository)
             queue["items"][0]["role"] = "scoped_maker"
-            with self.assertRaisesRegex(controller.ControllerError, "only Reviewer"):
+            with self.assertRaisesRegex(controller.ControllerError, "outside the attended"):
                 controller.validate_queue(queue)
             queue = released_queue(repository)
             queue["release"]["maximum_operations"] = 2
-            with self.assertRaisesRegex(controller.ControllerError, "exactly one"):
+            with self.assertRaisesRegex(controller.ControllerError, "must equal"):
                 controller.validate_queue(queue)
+
+    def test_scoped_maker_queue_is_a_valid_released_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ReviewRepository(directory)
+            queue = maker_queue(repository)
+            controller.validate_queue(queue)
+            controller.verify_release_signature(
+                queue, repository.approval_public.read_bytes()
+            )
 
     def test_released_queue_stops_after_its_single_reserved_operation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -427,6 +468,82 @@ class U2ControllerTests(unittest.TestCase):
             )
             rendered = json.dumps(queue)
             self.assertNotIn(KEY, rendered)
+
+    def test_scoped_maker_done_keeps_bounded_change_for_codex_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ReviewRepository(directory)
+            path = repository.queue_path(maker_queue(repository))
+            config = active_config(repository, maker=True)
+            with tempfile.TemporaryDirectory() as config_directory:
+                config_path = Path(config_directory) / "active.json"
+                config_path.write_text(json.dumps(config), encoding="utf-8")
+                args = argparse.Namespace(
+                    repo=repository.root, queue=path, config=config_path
+                )
+
+                def fake_worker_run(worker_args: argparse.Namespace) -> None:
+                    request = controller.worker.load_json(worker_args.request, "request")
+                    self.assertEqual(request["role"], "scoped_maker")
+                    target = repository.root / "services/model/README.md"
+                    target.write_text("Changed by scoped Maker\n", encoding="utf-8")
+                    result = {
+                        "status": "DONE",
+                        "summary": "Updated the requested documentation.",
+                        "changed_paths_claimed": ["services/model/README.md"],
+                        "verification_requested": ["Review the exact diff."],
+                        "residual_risk": [],
+                        "decision_required": None,
+                    }
+                    output = {
+                        "schema_version": 1,
+                        "request_id": request["request_id"],
+                        "request_digest": controller.worker.request_digest(request),
+                        "work_item_id": request["work_item_id"],
+                        "role": request["role"],
+                        "repository": request["repository"],
+                        "base_sha": request["base_sha"],
+                        "target_sha": request["target_sha"],
+                        "model": controller.bridge.DEFAULT_MODEL,
+                        "session_id": "test-maker-session",
+                        "num_turns": 1,
+                        "result": result,
+                        "actual_changed_paths": ["services/model/README.md"],
+                        "change_digest": "a" * 64,
+                    }
+                    controller.bridge.save_private_json(worker_args.output, output)
+
+                environment = {
+                    config["controller"]["key_environment"]: KEY,
+                    config["approver"]["public_key_path_environment"]: str(
+                        repository.approval_public
+                    ),
+                    "U2_EXECUTOR_TRUSTED_SHA": git(controller.ROOT, "rev-parse", "HEAD"),
+                }
+                stdout = io.StringIO()
+                with mock.patch.object(controller.worker, "CONFIG_PATH", config_path):
+                    with mock.patch.object(
+                        controller.worker, "run", side_effect=fake_worker_run
+                    ):
+                        with mock.patch.dict(
+                            controller.os.environ, environment, clear=False
+                        ):
+                            with contextlib.redirect_stdout(stdout):
+                                controller.run_next(args)
+
+            result = json.loads(stdout.getvalue())
+            self.assertEqual(result["status"], "WORK_COMPLETED")
+            self.assertEqual(result["role"], "scoped_maker")
+            self.assertEqual(result["outcome"], "DONE")
+            queue = controller.worker.load_json(path, "queue")
+            self.assertEqual(queue["items"][0]["result"]["verdict"], "DONE")
+            self.assertEqual(
+                [entry["type"] for entry in queue["events"]],
+                ["model_reserved", "maker_completed"],
+            )
+            self.assertEqual(
+                git(repository.root, "status", "--short"),
+                "M services/model/README.md",
+            )
 
     def test_controller_happy_path_exercises_real_worker_budget_and_nonce_admission(self):
         with tempfile.TemporaryDirectory() as directory:

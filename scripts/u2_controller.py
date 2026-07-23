@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic, private queue controller for the first local U2 Reviewer lane."""
+"""Deterministic private queue controller for local U2 Maker and Reviewer lanes."""
 
 from __future__ import annotations
 
@@ -98,7 +98,14 @@ ITEM_STATES = {
     "changes_requested",
     "failed",
 }
-EVENT_TYPES = {"model_reserved", "review_completed", "review_changes_requested", "run_failed"}
+EVENT_TYPES = {
+    "model_reserved",
+    "review_completed",
+    "review_changes_requested",
+    "maker_completed",
+    "maker_blocked",
+    "run_failed",
+}
 MUTABLE_ITEM_FIELDS = {"state", "attempts", "request_id", "result"}
 
 
@@ -136,11 +143,14 @@ def load_queue(repo: Path, path: Path) -> tuple[Path, dict[str, Any]]:
     return resolved, value
 
 
-def valid_result(value: Any, state: str) -> bool:
+def valid_result(value: Any, state: str, role: str) -> bool:
     if not isinstance(value, dict) or set(value) != RESULT_FIELDS:
         return False
     verdict = value.get("verdict")
-    expected = "APPROVE" if state == "completed" else "CHANGES_REQUESTED"
+    if role == "repository_reviewer":
+        expected = "APPROVE" if state == "completed" else "CHANGES_REQUESTED"
+    else:
+        expected = "DONE" if state == "completed" else "BLOCKED"
     return (
         verdict == expected
         and isinstance(value.get("summary"), str)
@@ -191,11 +201,21 @@ def validate_queue(value: dict[str, Any]) -> None:
         expires = parse_utc(release.get("expires_at"), "release.expires_at")
         if not dt.timedelta(0) < expires - approved <= dt.timedelta(days=7):
             fail("U2 queue release window must be positive and at most seven days", INVALID)
-        if release.get("allowed_roles") != ["repository_reviewer"]:
-            fail("initial U2 queue release must remain Reviewer-only", INVALID)
+        allowed_roles = release.get("allowed_roles")
+        if (
+            not isinstance(allowed_roles, list)
+            or not allowed_roles
+            or allowed_roles != sorted(set(allowed_roles))
+            or any(role not in {"repository_reviewer", "scoped_maker"} for role in allowed_roles)
+        ):
+            fail("U2 queue release roles are invalid", INVALID)
         maximum = release.get("maximum_operations")
-        if maximum != 1:
-            fail("first U2 queue release must authorize exactly one operation", INVALID)
+        if (
+            not isinstance(maximum, int)
+            or isinstance(maximum, bool)
+            or not 1 <= maximum <= 7
+        ):
+            fail("U2 queue release must authorize between one and seven operations", INVALID)
         if not worker.SIGNATURE_RE.fullmatch(release.get("queue_digest", "")):
             fail("U2 queue approval digest is invalid", INVALID)
         if not ED25519_SIGNATURE_RE.fullmatch(release.get("release_signature", "")):
@@ -214,24 +234,30 @@ def validate_queue(value: dict[str, Any]) -> None:
         item_ids.add(work_item_id)
         if item.get("state") not in ITEM_STATES:
             fail("U2 queue work-item state is invalid", INVALID)
-        if item.get("role") != "repository_reviewer":
-            fail("initial U2 controller accepts only Reviewer work", INVALID)
+        role = item.get("role")
+        if role not in {"repository_reviewer", "scoped_maker"}:
+            fail("U2 queue role is invalid", INVALID)
+        if value["status"] == "released" and role not in release["allowed_roles"]:
+            fail("U2 queue item role is outside the attended release", INVALID)
         if item.get("task_profile") not in bridge.MODEL_BY_TASK_PROFILE:
             fail("U2 queue task profile is invalid", INVALID)
         branch = item.get("branch")
+        branch_pattern = worker.REVIEW_BRANCH_RE if role == "repository_reviewer" else worker.MAKER_BRANCH_RE
         if (
             not isinstance(branch, str)
-            or not worker.REVIEW_BRANCH_RE.fullmatch(branch)
+            or not branch_pattern.fullmatch(branch)
             or branch in {"main", "master"}
             or "//" in branch
             or any(part in {"", ".", ".."} for part in branch.split("/"))
         ):
-            fail("U2 queue review branch is invalid", INVALID)
+            fail("U2 queue branch is invalid for its role", INVALID)
         for name in ("base_sha", "target_sha"):
             if not u1_executor.SHA_RE.fullmatch(item.get(name, "")):
                 fail(f"U2 queue {name} is invalid", INVALID)
-        if item["base_sha"] == item["target_sha"]:
+        if role == "repository_reviewer" and item["base_sha"] == item["target_sha"]:
             fail("U2 queue Reviewer requires a non-empty commit range", INVALID)
+        if role == "scoped_maker" and item["base_sha"] != item["target_sha"]:
+            fail("U2 queue Maker must start from one exact unchanged Head", INVALID)
         objective = item.get("objective")
         if not isinstance(objective, str) or objective != objective.strip() or not objective or len(objective) > 4000:
             fail("U2 queue objective is invalid", INVALID)
@@ -258,6 +284,8 @@ def validate_queue(value: dict[str, Any]) -> None:
                 worker.normalize_scope_path(scope, "queue scope")
             except worker.WorkerError as error:
                 fail(str(error), error.code)
+        if role == "scoped_maker" and not item["read_paths"]:
+            fail("U2 queue Maker requires readable context", INVALID)
         maximum_turns = item.get("maximum_turns")
         if (
             not isinstance(maximum_turns, int)
@@ -294,8 +322,8 @@ def validate_queue(value: dict[str, Any]) -> None:
         if state in {"running", "completed", "changes_requested", "failed"}:
             if not worker.REQUEST_ID_RE.fullmatch(request_id or "") or attempts < 1:
                 fail("started U2 work requires an exact request id and attempt", INVALID)
-        if state in {"completed", "changes_requested"} and not valid_result(result, state):
-            fail("finished U2 review result is invalid", INVALID)
+        if state in {"completed", "changes_requested"} and not valid_result(result, state, role):
+            fail("finished U2 result is invalid", INVALID)
         if state == "failed" and result is not None:
             fail("failed U2 work cannot claim a successful result", INVALID)
 
@@ -322,6 +350,13 @@ def validate_queue(value: dict[str, Any]) -> None:
 
     for identifier in by_id:
         visit(identifier)
+
+    if value["status"] == "released":
+        released_roles = sorted({item["role"] for item in items})
+        if release["allowed_roles"] != released_roles:
+            fail("U2 release roles do not match the immutable queue", INVALID)
+        if release["maximum_operations"] != len(items) or len(items) > 7:
+            fail("U2 release operation cap must equal its one-to-seven item queue", INVALID)
 
     events = value.get("events")
     if not isinstance(events, list) or len(events) > 500:
@@ -538,7 +573,11 @@ def verify_release_signature(queue: dict[str, Any], public_key: bytes) -> None:
 
 
 def release_claim_path(
-    repo: Path, queue: dict[str, Any], *, prepare: bool = False
+    repo: Path,
+    queue: dict[str, Any],
+    work_item_id: str,
+    *,
+    prepare: bool = False,
 ) -> Path:
     state_root = bridge.shared_ledger_path(repo).parent
     claims = state_root / "u2-release-claims"
@@ -558,7 +597,10 @@ def release_claim_path(
         ):
             fail("U2 external release-claim directory must remain owner-only")
     identity = hashlib.sha256(
-        release_payload(queue) + queue["release"]["release_signature"].encode("ascii")
+        release_payload(queue)
+        + queue["release"]["release_signature"].encode("ascii")
+        + b"\0"
+        + work_item_id.encode("utf-8")
     ).hexdigest()
     return claims / f"{identity}.json"
 
@@ -569,7 +611,9 @@ def claim_release_once(
     request: dict[str, Any],
     now: dt.datetime,
 ) -> Path:
-    path = release_claim_path(repo, queue, prepare=True)
+    path = release_claim_path(
+        repo, queue, request["work_item_id"], prepare=True
+    )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -707,19 +751,36 @@ def validate_worker_output(
         or output.get("request_id") != request["request_id"]
         or output.get("request_digest") != worker.request_digest(request)
         or output.get("work_item_id") != request["work_item_id"]
-        or output.get("role") != "repository_reviewer"
+        or output.get("role") != request["role"]
         or output.get("repository") != request["repository"]
         or output.get("base_sha") != request["base_sha"]
         or output.get("target_sha") != request["target_sha"]
-        or output.get("actual_changed_paths") != []
-        or output.get("change_digest") is not None
     ):
-        fail("U2 worker output is not bound to the reserved review request")
+        fail("U2 worker output is not bound to the reserved request")
     result = output.get("result")
-    try:
-        u1_executor.validate_result(result)
-    except u1_executor.GateError as error:
-        fail(f"U2 Reviewer result is invalid: {error}")
+    if request["role"] == "repository_reviewer":
+        if output.get("actual_changed_paths") != [] or output.get("change_digest") is not None:
+            fail("U2 Reviewer output claims a source change")
+        try:
+            u1_executor.validate_result(result)
+        except u1_executor.GateError as error:
+            fail(f"U2 Reviewer result is invalid: {error}")
+    else:
+        try:
+            result = worker.validate_maker_result(result)
+        except worker.WorkerError as error:
+            fail(f"U2 Maker result is invalid: {error}")
+        changed_paths = output.get("actual_changed_paths")
+        change_digest = output.get("change_digest")
+        if result["status"] == "DONE":
+            if (
+                not isinstance(changed_paths, list)
+                or not changed_paths
+                or not worker.SIGNATURE_RE.fullmatch(change_digest or "")
+            ):
+                fail("U2 Maker output lacks machine-derived change evidence")
+        elif changed_paths != [] or change_digest is not None:
+            fail("BLOCKED U2 Maker output cannot retain source changes")
     return relative_private_path(repo, output_path), result
 
 
@@ -754,7 +815,6 @@ def run_next(args: argparse.Namespace) -> None:
     worker.require_trusted_config_path(args.config)
     config = worker.load_config(args.config)
     worker.require_activation(config)
-    worker.require_role_activation(config, "repository_reviewer")
     repo = args.repo.resolve()
     resolved = queue_path(repo, args.queue, must_exist=True)
     current = dt.datetime.now(dt.timezone.utc)
@@ -769,6 +829,7 @@ def run_next(args: argparse.Namespace) -> None:
         verify_release_signature(queue, approval_public_key)
         release_is_current(queue, current)
         item = select_next(queue)
+        worker.require_role_activation(config, item["role"])
         request = build_request(queue, item, config, key, current)
         claim_release_once(repo, queue, request, current)
         request_dir = repo / ".agent-state/u2-requests"
@@ -780,7 +841,16 @@ def run_next(args: argparse.Namespace) -> None:
         item["request_id"] = request["request_id"]
         item["result"] = None
         queue["events"].append(
-            event("model_reserved", item, request["request_id"], "running", "REVIEW_RESERVED", current)
+            event(
+                "model_reserved",
+                item,
+                request["request_id"],
+                "running",
+                "REVIEW_RESERVED"
+                if item["role"] == "repository_reviewer"
+                else "MAKER_RESERVED",
+                current,
+            )
         )
         validate_queue(queue)
         bridge.save_private_json(resolved, queue)
@@ -806,11 +876,19 @@ def run_next(args: argparse.Namespace) -> None:
     ) as error:
         detail = getattr(error, "failure_class", None) or type(error).__name__
         finalize_failure(repo, args.queue, item["work_item_id"], request["request_id"], detail)
-        fail("U2 Reviewer run failed or was quarantined")
+        fail("U2 work run failed or was quarantined")
 
     finished = dt.datetime.now(dt.timezone.utc)
-    state = "completed" if result["verdict"] == "APPROVE" else "changes_requested"
-    event_type = "review_completed" if state == "completed" else "review_changes_requested"
+    if request["role"] == "repository_reviewer":
+        outcome = result["verdict"]
+        state = "completed" if outcome == "APPROVE" else "changes_requested"
+        event_type = (
+            "review_completed" if state == "completed" else "review_changes_requested"
+        )
+    else:
+        outcome = result["status"]
+        state = "completed" if outcome == "DONE" else "changes_requested"
+        event_type = "maker_completed" if state == "completed" else "maker_blocked"
     with bridge.locked_ledger(resolved):
         queue = worker.load_json(resolved, "U2 controller queue")
         validate_queue(queue)
@@ -825,7 +903,7 @@ def run_next(args: argparse.Namespace) -> None:
         queued_item = matches[0]
         queued_item["state"] = state
         queued_item["result"] = {
-            "verdict": result["verdict"],
+            "verdict": outcome,
             "summary": result["summary"],
             "output_path": output_relative,
             "request_digest": worker.request_digest(request),
@@ -833,7 +911,7 @@ def run_next(args: argparse.Namespace) -> None:
             "completed_at": finished.isoformat().replace("+00:00", "Z"),
         }
         queue["events"].append(
-            event(event_type, queued_item, request["request_id"], state, result["verdict"], finished)
+            event(event_type, queued_item, request["request_id"], state, outcome, finished)
         )
         validate_queue(queue)
         bridge.save_private_json(resolved, queue)
@@ -845,8 +923,10 @@ def run_next(args: argparse.Namespace) -> None:
                 "queue_id": queue["queue_id"],
                 "work_item_id": item["work_item_id"],
                 "request_id": request["request_id"],
+                "role": request["role"],
                 "target_sha": request["target_sha"],
-                "verdict": result["verdict"],
+                "outcome": outcome,
+                "verdict": outcome,
                 "next_ready": any(
                     entry["state"] in {"planned", "ready"}
                     and set(entry["depends_on"]).issubset(
@@ -869,11 +949,15 @@ def inspect_queue(args: argparse.Namespace) -> None:
     completed = {
         item["work_item_id"] for item in queue["items"] if item["state"] == "completed"
     }
-    next_ready = any(
-        item["state"] in {"planned", "ready"}
-        and set(item["depends_on"]).issubset(completed)
-        and item["attempts"] < item["maximum_attempts"]
-        for item in queue["items"]
+    next_item = next(
+        (
+            item
+            for item in queue["items"]
+            if item["state"] in {"planned", "ready"}
+            and set(item["depends_on"]).issubset(completed)
+            and item["attempts"] < item["maximum_attempts"]
+        ),
+        None,
     )
     print(
         json.dumps(
@@ -882,7 +966,11 @@ def inspect_queue(args: argparse.Namespace) -> None:
                 "queue_id": queue["queue_id"],
                 "repository": queue["repository"],
                 "counts": counts,
-                "next_ready": next_ready,
+                "next_ready": next_item is not None,
+                "next_work_item_id": (
+                    next_item["work_item_id"] if next_item is not None else None
+                ),
+                "next_role": next_item["role"] if next_item is not None else None,
                 "operations_reserved": sum(
                     1 for event in queue["events"] if event["type"] == "model_reserved"
                 ),
@@ -890,7 +978,10 @@ def inspect_queue(args: argparse.Namespace) -> None:
                 "approval_digest": approval_digest(queue),
                 "external_release_claimed": (
                     queue["status"] == "released"
-                    and release_claim_path(repo, queue).exists()
+                    and next_item is not None
+                    and release_claim_path(
+                        repo, queue, next_item["work_item_id"]
+                    ).exists()
                 ),
             },
             separators=(",", ":"),
@@ -902,7 +993,6 @@ def release_queue(args: argparse.Namespace) -> None:
     worker.require_trusted_config_path(args.config)
     config = worker.load_config(args.config)
     worker.require_activation(config)
-    worker.require_role_activation(config, "repository_reviewer")
     approval_public_key = worker.approval_public_key_bytes(config, os.environ)
     repo = args.repo.resolve()
     resolved = queue_path(repo, args.queue, must_exist=True)
@@ -917,6 +1007,11 @@ def release_queue(args: argparse.Namespace) -> None:
             fail("U2 queue repository does not match the attended release worktree")
         if queue["status"] != "draft_paused":
             fail("only a paused U2 queue can receive an attended release")
+        if len(queue["items"]) > 7:
+            fail("one attended U2 release can contain at most seven work items")
+        allowed_roles = sorted({item["role"] for item in queue["items"]})
+        for role in allowed_roles:
+            worker.require_role_activation(config, role)
         digest = approval_digest(queue)
         if not hmac.compare_digest(digest, args.expected_digest):
             fail("user-approved U2 queue digest does not match the current queue")
@@ -927,8 +1022,8 @@ def release_queue(args: argparse.Namespace) -> None:
             "approved_by": args.approved_by,
             "approved_at": current.isoformat().replace("+00:00", "Z"),
             "expires_at": expires.isoformat().replace("+00:00", "Z"),
-            "allowed_roles": ["repository_reviewer"],
-            "maximum_operations": 1,
+            "allowed_roles": allowed_roles,
+            "maximum_operations": len(queue["items"]),
             "queue_digest": digest,
             "release_signature": "A" * 86 + "==",
         }
@@ -940,11 +1035,12 @@ def release_queue(args: argparse.Namespace) -> None:
     print(
         json.dumps(
             {
-                "status": "RELEASED_REVIEWER_ONLY",
+                "status": "RELEASED_BOUNDED_QUEUE",
                 "queue_id": queue["queue_id"],
                 "approval_digest": digest,
                 "expires_at": queue["release"]["expires_at"],
-                "maximum_operations": 1,
+                "allowed_roles": queue["release"]["allowed_roles"],
+                "maximum_operations": queue["release"]["maximum_operations"],
             },
             separators=(",", ":"),
         )

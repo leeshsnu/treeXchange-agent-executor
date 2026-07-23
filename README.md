@@ -193,40 +193,38 @@ commits, pushes, opens a PR, merges, deploys or clears a pause. Those remain
 deterministic controller responsibilities after machine-derived postconditions
 pass.
 
-### Deterministic U2 Reviewer controller
+### Deterministic U2 Maker and Reviewer controller
 
-`scripts/u2_controller.py` supplies the missing first-stage manager for the
-read-only Reviewer lane. Its queue remains owner-only and ignored under the
+`scripts/u2_controller.py` manages both the implementation and review lanes.
+Its queue remains owner-only and ignored under the
 assigned repository's `.agent-state` directory. A draft queue may be inspected
 while U2 is paused, but it cannot execute. The controller:
 
 - validates one bounded dependency graph and selects only a dependency-ready
-  Reviewer item;
+  Maker or Reviewer item;
 - hashes the immutable work manifest, including objective, acceptance criteria,
   role, exact Base and Head, branch, path scopes, model profile and dependencies;
 - requires an attended `release` command to present the exact user-approved
   manifest digest, then signs the release metadata with a separate Ed25519
   approval private key whose public-key digest is pinned in the active packet;
-- limits the first release to the read-only Reviewer and exactly one model
-  operation;
-- atomically claims the signed release once in an owner-only external receipt
-  under shared Git state before queue state advances, so rewinding the mutable
-  queue alone cannot replay an attended release;
+- authorizes one to seven explicitly listed work items in one release and
+  atomically claims each item once before queue state advances;
 - creates an owner-only, single-use signed worker request, invokes the same
   bounded U2 worker with the explicit repository-wide shared ledger, and
   independently binds the returned result to the request, repository and target
   Head;
+- leaves a successful Maker's bounded working-tree change available for Codex
+  verification and records its machine-derived changed paths and digest;
 - moves the item to `completed`, `changes_requested`, or fail-closed `failed`,
   and appends a sanitized machine event so a local dashboard can consume state
   without receiving prompt, diff, credential or full model-output content.
 
-The first controller does not create a branch, edit source, commit, push, open a
-PR, merge, deploy, clear pause, retry automatically, or activate the worker. A
-later launcher may call `run-next` only after the exact controller code, paused
-queue digest, time-bounded Reviewer activation and local secrets receive their
-separate approvals. Reviewer requests may target only signed `agent/`, `codex/`
-or `claude/` feature branches; the Maker remains restricted to `claude/`
-branches.
+Claude does not receive shell or Git tools. The controller itself does not
+create a branch, commit, push, open a PR, merge, deploy, clear pause, retry
+automatically, or activate the worker. Maker requests run only on a clean,
+pre-created `claude/` branch and may change only the exact files listed in the
+released work item. Reviewer requests may target signed `agent/`, `codex/` or
+`claude/` feature branches.
 
 The controller HMAC key and attended Ed25519 approval key have different jobs.
 The scheduled controller receives the HMAC key so it can authorize one-use
@@ -254,7 +252,7 @@ an execution boundary, not an approval bypass:
 2. The deterministic controller may release only the exact queue digest that
    received attended user approval.
 3. The user-owned runner scans only explicitly allowlisted worktrees and invokes
-   `run-next` only for a current, signed, unconsumed Reviewer release.
+   `run-next` only for a current, signed, unconsumed Maker or Reviewer item.
 4. Claude uses the user's local Claude Code subscription session. The structured
    result returns to owner-only local state for later Codex verification.
 
@@ -263,8 +261,9 @@ approval private key. Its config, controller key, public approval key and
 attempt ledger must live in an owner-only directory outside every managed Git
 worktree. It verifies a clean exact executor SHA before each cycle, passes no API
 key to the controller, reserves an external attempt record before launch, runs
-at most one operation per cycle, and has zero automatic retries. A failed launch
-therefore requires a new explicit release rather than being polled repeatedly.
+at most one operation per polling cycle, and has zero automatic retries. One
+released queue can advance multiple distinct work items over successive cycles;
+a failed item is not silently retried.
 
 The checked-in example at `config/u2-user-runner.example.json` is paused and is
 not an activation packet. After a reviewed runtime commit and time-bounded U2
