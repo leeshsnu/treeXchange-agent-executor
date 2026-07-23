@@ -217,9 +217,11 @@ the attended release.
 
 The attended queue release and automated worker request use separate keys. The
 release is Ed25519-signed by an owner-only private key used only by the attended
-`release` command. The active activation packet pins the SHA-256 digest of its
-public key. `run-next` receives only that public key, so it can verify the exact
-approved manifest but cannot mint a release. The controller HMAC key remains
+`release` command. The owner-only local runner config pins the SHA-256 digest of
+its public key and passes both the path and digest to the worker. Legacy
+time-bounded activation packets may pin the same digest directly. `run-next`
+receives only that public key, so it can verify the exact approved manifest but
+cannot mint a release. The controller HMAC key remains
 capable only of signing the single-use request derived from an already valid
 release.
 
@@ -234,9 +236,10 @@ The controller key is injected only into the deterministic controller and is
 removed from the Claude child environment by the worker. The approval private
 key is not part of the unattended runtime environment at all. Draft inspection
 does not require either key. Paused U2 denies before reading a queue; an active
-run also requires the exact executor SHA, current activation window, Reviewer
-role, current signed queue release, remaining one-operation release budget,
-fresh single-use nonce and the repository-wide model-call budget. A crash or
+run also requires the exact executor SHA, a locally installed role, a matching
+approval-key fingerprint, a current signed queue release, remaining bounded
+release budget, a fresh per-item release claim and single-use nonce, and the
+repository-wide model-call budget. A crash or
 malformed result leaves work `running` or `failed`; it never authorizes an
 automatic retry, source write or integration.
 
@@ -258,12 +261,15 @@ inspecting sanitized local results.
 The runner is not a new authority source. It scans only the fixed repository
 allowlist, accepts only the literal `.agent-state/u2-queues` directory, and calls
 the existing controller only after its `inspect` result proves that a queue is
-released, unconsumed and limited to one operation. Queue signature, activation,
+released, has a dependency-ready unconsumed item, and stays within its signed
+one-to-seven-item operation cap. Queue signature, activation,
 exact Base and Head, role, path, budget, nonce, clean-worktree and result checks
 remain enforced by the controller and worker.
 
 The runner's config, state, controller key and approval public key must be
-owner-only and outside every managed Git worktree. The attended approval private
+owner-only and outside every managed Git worktree. The runner config must pin
+the exact approval public-key SHA-256 fingerprint and validation fails if the
+key is swapped. The attended approval private
 key is never present in its environment. Inspection subprocesses receive no
 controller key. Model subprocesses receive no API key from the runner; the
 worker separately strips controller and GitHub credentials before invoking the
@@ -279,10 +285,12 @@ fixed status codes and timestamps, never prompts, diffs, credentials or model
 output.
 
 The LaunchAgent writer does not call `launchctl`; it returns the exact bootstrap
-command for the account owner to run once. A checked-in config or runner process
-does not activate U2, release a queue, clear a repository pause, publish a PR,
-merge or deploy. Program-stage mandates and unattended queue release remain a
-future separately approved design after the supervised pilots.
+command for the account owner to run once. The account owner performs that
+one-time start. The installed code exposes the two bounded roles but cannot mint
+or release work: only a separately signed, expiring queue authorizes model
+operations. Neither the checked-in config nor the runner clears a repository
+pause, publishes a PR, merges or deploys. Unattended queue release remains a
+future separately approved design.
 
 ## Residual administrative risk
 

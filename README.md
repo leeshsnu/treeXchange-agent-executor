@@ -183,12 +183,13 @@ The checked-in U2 config is `installed_local` and makes both bounded roles
 available. This is a one-time code installation, not a seven-day activation
 packet. It still cannot make a model call unless the user-owned runner is set to
 `active`, its exact executor SHA matches `U2_EXECUTOR_TRUSTED_SHA`, the controller
-and owner approval keys are available locally, and a current signed work queue
-contains the exact task. The runner's external `paused` switch is the persistent
-kill switch; individual queue releases expire within seven days. The worker never
-commits, pushes, opens a PR, merges, deploys or clears a pause. Those remain
-deterministic controller responsibilities after machine-derived postconditions
-pass.
+and owner approval keys are available locally, the approval public key matches
+the SHA-256 fingerprint pinned in the owner-only runner config, and a current
+signed work queue contains the exact task. The runner's external `paused` switch
+is the persistent kill switch; individual queue releases expire within seven
+days. The worker never commits, pushes, opens a PR, merges, deploys or clears a
+pause. Those remain deterministic controller responsibilities after
+machine-derived postconditions pass.
 
 ### Deterministic U2 Maker and Reviewer controller
 
@@ -203,7 +204,9 @@ while U2 is paused, but it cannot execute. The controller:
   role, exact Base and Head, branch, path scopes, model profile and dependencies;
 - requires an attended `release` command to present the exact user-approved
   manifest digest, then signs the release metadata with a separate Ed25519
-  approval private key whose public-key digest is pinned in the active packet;
+  approval private key whose public-key digest is pinned in the owner-only runner
+  config for an installed-local worker or in the active packet for a legacy
+  time-bounded activation;
 - authorizes one to seven explicitly listed work items in one release and
   atomically claims each item once before queue state advances;
 - creates an owner-only, single-use signed worker request, invokes the same
@@ -264,7 +267,8 @@ a failed item is not silently retried.
 
 The checked-in example at `config/u2-user-runner.example.json` is paused. After
 the reviewed runtime commit is integrated, the user creates one private external
-config, pins that commit, and can verify it:
+config, pins that commit and the approval public-key SHA-256 fingerprint, and can
+verify it:
 
 ```bash
 chmod 600 "$HOME/Library/Application Support/treeXchange-u2/runner.json"
@@ -286,6 +290,13 @@ queue stops model operations without relying on Codex. A queue release is the
 stage-sized mandate: it can contain one to seven exact work items and expires in
 at most seven days. The installed worker itself does not need weekly code
 reactivation.
+
+Repository context is also bounded independently of write scope. Claude cannot
+read `.github`, `config`, `ops`, Git-private state, local agent state, Claude
+settings or environment files. A signed task may read `docs/governance` because
+those project contracts define the work, but Maker writes to that directory
+remain forbidden. Bracketed Next.js route filenames are compared as literal
+paths; no glob or regular-expression expansion is used.
 
 ## OMC collaboration lane
 

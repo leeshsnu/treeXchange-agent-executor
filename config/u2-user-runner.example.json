@@ -10,6 +10,7 @@
   "executor_config": "config/u2-local-worker.json",
   "controller_key_path": "/Users/YOU/Library/Application Support/treeXchange-u2/keys/controller.key",
   "approval_public_key_path": "/Users/YOU/Library/Application Support/treeXchange-u2/keys/approval-public.pem",
+  "approval_public_key_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "repositories": [
     {
       "repository": "leeshsnu/treeXchange-season2",

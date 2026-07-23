@@ -45,6 +45,7 @@ RUNNER_FIELDS = {
     "executor_config",
     "controller_key_path",
     "approval_public_key_path",
+    "approval_public_key_sha256",
     "repositories",
 }
 REPOSITORY_FIELDS = {
@@ -167,6 +168,11 @@ def validate_config(value: dict[str, Any]) -> dict[str, Any]:
     approval_public = absolute_path(
         value.get("approval_public_key_path"), "approval_public_key_path"
     )
+    approval_public_digest = value.get("approval_public_key_sha256")
+    if not isinstance(approval_public_digest, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", approval_public_digest
+    ):
+        fail("approval_public_key_sha256 must be an exact lowercase SHA-256", INVALID)
     executor_config = value.get("executor_config")
     if (
         not isinstance(executor_config, str)
@@ -218,7 +224,11 @@ def validate_config(value: dict[str, Any]) -> dict[str, Any]:
         if not (executor / executor_config).is_file():
             fail("active U2 user-runner executor_config is unavailable")
         private_file_bytes(controller_key, "controller key")
-        private_file_bytes(approval_public, "approval public key")
+        approval_public_bytes = private_file_bytes(
+            approval_public, "approval public key"
+        )
+        if hashlib.sha256(approval_public_bytes).hexdigest() != approval_public_digest:
+            fail("approval public key does not match the pinned SHA-256")
         for path in exclude_files:
             if private_file_bytes(path, "git excludes file") != b".agent-state/\n":
                 fail("git excludes file may ignore only .agent-state/")
@@ -335,6 +345,9 @@ def runner_environment(config: dict[str, Any], repository: dict[str, Any]) -> di
             "TREEXCHANGE_U2_CONTROLLER_KEY": controller_key,
             "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_PATH": config[
                 "approval_public_key_path"
+            ],
+            "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_SHA256": config[
+                "approval_public_key_sha256"
             ],
         }
     )

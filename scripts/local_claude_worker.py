@@ -76,6 +76,9 @@ SENSITIVE_READ_PATHS = (
     ".claude/**",
     ".env",
     ".env.*",
+    ".github/**",
+    "config/**",
+    "ops/**",
 )
 EXPECTED_BLOCKED_MAKER_PATHS = [
     ".git/**",
@@ -182,10 +185,17 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
     if (
         not isinstance(approver, dict)
         or set(approver)
-        != {"key_id", "public_key_path_environment", "public_key_sha256"}
+        != {
+            "key_id",
+            "public_key_path_environment",
+            "public_key_sha256_environment",
+            "public_key_sha256",
+        }
         or approver.get("key_id") != "u2-attended-approval-v1"
         or approver.get("public_key_path_environment")
         != "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_PATH"
+        or approver.get("public_key_sha256_environment")
+        != "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_SHA256"
         or (
             approver.get("public_key_sha256") is not None
             and SIGNATURE_RE.fullmatch(approver["public_key_sha256"]) is None
@@ -323,11 +333,12 @@ def approval_public_key_bytes(
         or final.st_size != metadata.st_size
     ):
         fail("U2 attended approver public key changed during inspection")
-    expected = approver.get("public_key_sha256")
-    if expected is not None and (
-        not isinstance(expected, str)
-        or not hmac.compare_digest(hashlib.sha256(value).hexdigest(), expected)
-    ):
+    expected = approver.get("public_key_sha256") or source.get(
+        approver["public_key_sha256_environment"]
+    )
+    if not isinstance(expected, str) or SIGNATURE_RE.fullmatch(expected) is None:
+        fail("U2 attended approver public key fingerprint is unavailable")
+    if not hmac.compare_digest(hashlib.sha256(value).hexdigest(), expected):
         fail("U2 attended approver public key does not match the active pin")
     return value
 

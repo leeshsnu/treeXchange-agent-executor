@@ -20,6 +20,7 @@
   "approver": {
     "key_id": "u2-attended-approval-v1",
     "public_key_path_environment": "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_PATH",
+    "public_key_sha256_environment": "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_SHA256",
     "public_key_sha256": null
   },
   "repositories": [

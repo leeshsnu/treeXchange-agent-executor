@@ -306,6 +306,18 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         self.assertEqual(
             validated["allowed_paths"], ["apps/web/app/[...slug]/page.tsx"]
         )
+        self.assertTrue(
+            worker.path_matches(
+                "apps/web/app/[...slug]/page.tsx",
+                "apps/web/app/[...slug]/page.tsx",
+            )
+        )
+        self.assertFalse(
+            worker.path_matches(
+                "apps/web/app/catch-all/page.tsx",
+                "apps/web/app/[...slug]/page.tsx",
+            )
+        )
 
     def test_sensitive_dotenv_read_scope_is_rejected(self):
         request = work_request("repository_reviewer")
@@ -328,14 +340,9 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "credential paths"):
             worker.validate_request(request, self.config, NOW)
 
-    def test_project_contracts_are_readable_but_remain_blocked_for_maker_writes(self):
+    def test_governance_contracts_are_readable_but_remain_blocked_for_maker_writes(self):
         for role in ("repository_reviewer", "scoped_maker"):
-            for path in (
-                ".github/workflows/ci.yml",
-                "config/u2-local-worker.json",
-                "ops/runbook.md",
-                "docs/governance/status.md",
-            ):
+            for path in ("docs/governance/status.md",):
                 with self.subTest(role=role, path=path):
                     request = work_request(role)
                     if role == "scoped_maker":
@@ -355,6 +362,24 @@ class LocalClaudeWorkerTests(unittest.TestCase):
                         request = sign_request(request)
                         with self.assertRaisesRegex(worker.WorkerError, "protected path"):
                             worker.validate_request(request, self.config, NOW)
+
+    def test_control_plane_context_remains_unreadable_for_both_roles(self):
+        for role in ("repository_reviewer", "scoped_maker"):
+            for path in (
+                ".github/workflows/ci.yml",
+                "config/u2-local-worker.json",
+                "ops/runbook.md",
+            ):
+                with self.subTest(role=role, path=path):
+                    request = work_request(role)
+                    request["read_paths"] = [path]
+                    if role == "scoped_maker":
+                        request["allowed_paths"] = [
+                            "services/model/HANDOFF_NEEDED.md"
+                        ]
+                    request = sign_request(request)
+                    with self.assertRaisesRegex(worker.WorkerError, "credential paths"):
+                        worker.validate_request(request, self.config, NOW)
 
     def test_reviewer_can_use_exact_diff_without_repository_context_reads(self):
         request = work_request("repository_reviewer")

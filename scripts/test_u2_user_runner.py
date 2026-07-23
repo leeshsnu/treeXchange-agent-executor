@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -77,6 +78,9 @@ class UserRunnerFixture:
             "executor_config": "config/u2-local-worker.json",
             "controller_key_path": str(self.controller_key),
             "approval_public_key_path": str(self.public_key),
+            "approval_public_key_sha256": hashlib.sha256(
+                self.public_key.read_bytes()
+            ).hexdigest(),
             "repositories": [
                 {
                     "repository": "leeshsnu/treeXchange-season2",
@@ -93,6 +97,14 @@ def completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProc
 
 
 class U2UserRunnerTests(unittest.TestCase):
+    def test_active_config_rejects_a_swapped_approval_public_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            value = fixture.config()
+            fixture.public_key.write_text("swapped\n", encoding="utf-8")
+            with self.assertRaisesRegex(runner.RunnerError, "pinned SHA-256"):
+                runner.validate_config(value)
+
     def test_paused_config_never_attempts_a_queue(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = UserRunnerFixture(directory)
@@ -286,6 +298,10 @@ class U2UserRunnerTests(unittest.TestCase):
             self.assertNotIn("ANTHROPIC_API_KEY", environment)
             self.assertNotIn("TREEXCHANGE_U2_APPROVAL_PRIVATE_KEY", environment)
             self.assertEqual(environment["TREEXCHANGE_U2_CONTROLLER_KEY"], "x" * 40)
+            self.assertEqual(
+                environment["TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_SHA256"],
+                fixture.config()["approval_public_key_sha256"],
+            )
 
     def test_inspection_receives_neither_controller_key_nor_claude_oauth(self):
         with tempfile.TemporaryDirectory() as directory:
