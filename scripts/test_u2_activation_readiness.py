@@ -47,7 +47,7 @@ class ActivationReadinessTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
-    def test_checked_in_packet_stays_paused_and_never_exposes_values(self):
+    def test_missing_local_prerequisites_never_expose_values_or_make_a_call(self):
         environment = {
             "U2_EXECUTOR_TRUSTED_SHA": "b" * 40,
             "TREEXCHANGE_U2_CONTROLLER_KEY": "short",
@@ -57,7 +57,8 @@ class ActivationReadinessTests(unittest.TestCase):
                 with mock.patch.object(readiness.bridge, "require_local_claude_runtime"):
                     result = readiness.assess(environ=environment, now=NOW)
         self.assertEqual(result["status"], "PAUSED_NOT_READY")
-        self.assertIn("U2_ACTIVATION_PACKET_NOT_INSTALLED", result["blockers"])
+        self.assertIn("EXACT_MERGED_SHA_NOT_EXTERNALLY_PINNED", result["blockers"])
+        self.assertIn("APPROVER_PUBLIC_KEY_UNAVAILABLE_OR_UNPINNED", result["blockers"])
         rendered = json.dumps(result)
         self.assertNotIn(environment["TREEXCHANGE_U2_CONTROLLER_KEY"], rendered)
         self.assertFalse(result["claim_boundary"]["makes_model_call"])

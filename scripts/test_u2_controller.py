@@ -384,15 +384,21 @@ class U2ControllerTests(unittest.TestCase):
                 released, repository.approval_public.read_bytes()
             )
 
-    def test_paused_controller_denies_before_queue_access(self):
+    def test_controller_denies_before_queue_access_without_pinned_runtime_sha(self):
         args = argparse.Namespace(
             repo=Path("/must/not/read"),
             queue=Path("/must/not/read/queue.json"),
             config=controller.worker.CONFIG_PATH,
         )
         with mock.patch.object(controller, "queue_path") as queue_access:
-            with self.assertRaisesRegex(controller.worker.WorkerError, "proposed and paused"):
-                controller.run_next(args)
+            with mock.patch.object(
+                controller.worker.bridge, "exact_commit", return_value="a" * 40
+            ):
+                with mock.patch.dict(controller.os.environ, {}, clear=True):
+                    with self.assertRaisesRegex(
+                        controller.worker.WorkerError, "exact trusted SHA"
+                    ):
+                        controller.run_next(args)
         queue_access.assert_not_called()
 
     def test_reviewer_approve_completes_item_and_records_machine_event(self):

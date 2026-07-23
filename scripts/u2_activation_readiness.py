@@ -68,7 +68,7 @@ def assess(
         "repository_reviewer",
         "scoped_maker",
     ]
-    if config["status"] != "approved_active" or activation.get("enabled") is not True:
+    if config["status"] not in {"installed_local", "approved_active"} or activation.get("enabled") is not True:
         blockers.append("U2_ACTIVATION_PACKET_NOT_INSTALLED")
     elif not operational_roles:
         blockers.append("MAKER_AND_REVIEWER_ROLES_NOT_ENABLED")
@@ -92,10 +92,11 @@ def assess(
             "approver_public_key_available": approver_public_key_available,
             "maker_and_reviewer_activation": operational_roles,
         },
-        "activation_target": {
+        "local_operating_contract": {
             "enabled_roles": ["repository_reviewer", "scoped_maker"],
             "scoped_maker_enabled": True,
-            "maximum_window_days": worker.MAX_ACTIVATION_WINDOW_DAYS,
+            "runner_pause_is_kill_switch": True,
+            "queue_release_window_days": 7,
         },
         "blockers": blockers,
         "claim_boundary": {

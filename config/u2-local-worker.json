@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "status": "proposed_paused",
+  "status": "installed_local",
   "activation": {
-    "enabled": false,
-    "enabled_roles": [],
-    "approved_by": null,
+    "enabled": true,
+    "enabled_roles": ["repository_reviewer", "scoped_maker"],
+    "approved_by": "local-owner",
     "approved_at": null,
     "expires_at": null,
     "trusted_sha_environment": "U2_EXECUTOR_TRUSTED_SHA",

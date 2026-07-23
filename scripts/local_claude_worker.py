@@ -231,6 +231,21 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
             fail("paused U2 activation fields must remain empty and false", INVALID)
         if approver["public_key_sha256"] is not None:
             fail("paused U2 approver key pin must remain empty", INVALID)
+    elif status == "installed_local":
+        if activation != {
+            "enabled": True,
+            "enabled_roles": ["repository_reviewer", "scoped_maker"],
+            "approved_by": "local-owner",
+            "approved_at": None,
+            "expires_at": None,
+            "trusted_sha_environment": "U2_EXECUTOR_TRUSTED_SHA",
+            "requires_controller_signature": True,
+            "requires_control_release_id": True,
+            "requires_budget_reservation_id": True,
+        }:
+            fail("installed local U2 roles must match the fixed operating contract", INVALID)
+        if approver["public_key_sha256"] is not None:
+            fail("installed local U2 uses the owner-only external approval key", INVALID)
     elif status == "approved_active":
         enabled_roles = activation.get("enabled_roles")
         if activation.get("enabled") is not True:
@@ -309,8 +324,9 @@ def approval_public_key_bytes(
     ):
         fail("U2 attended approver public key changed during inspection")
     expected = approver.get("public_key_sha256")
-    if not isinstance(expected, str) or not hmac.compare_digest(
-        hashlib.sha256(value).hexdigest(), expected
+    if expected is not None and (
+        not isinstance(expected, str)
+        or not hmac.compare_digest(hashlib.sha256(value).hexdigest(), expected)
     ):
         fail("U2 attended approver public key does not match the active pin")
     return value
@@ -322,15 +338,17 @@ def require_activation(
     now: dt.datetime | None = None,
 ) -> None:
     activation = config.get("activation")
-    if config.get("status") != "approved_active" or not isinstance(activation, dict):
+    status = config.get("status")
+    if status not in {"approved_active", "installed_local"} or not isinstance(activation, dict):
         fail("U2 local worker remains proposed and paused")
     if activation.get("enabled") is not True:
         fail("U2 local worker activation is disabled")
-    approved = parse_utc(activation.get("approved_at", ""), "approved_at")
-    expires = parse_utc(activation.get("expires_at", ""), "expires_at")
     current = now or dt.datetime.now(dt.timezone.utc)
-    if not approved <= current < expires:
-        fail("U2 local worker is outside its approved activation window")
+    if status == "approved_active":
+        approved = parse_utc(activation.get("approved_at", ""), "approved_at")
+        expires = parse_utc(activation.get("expires_at", ""), "expires_at")
+        if not approved <= current < expires:
+            fail("U2 local worker is outside its approved activation window")
     source = os.environ if environ is None else environ
     trusted_sha = source.get(activation.get("trusted_sha_environment", ""))
     running_sha = bridge.exact_commit(ROOT, "HEAD")

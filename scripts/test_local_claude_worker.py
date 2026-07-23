@@ -137,15 +137,20 @@ class LocalClaudeWorkerTests(unittest.TestCase):
     def setUp(self):
         self.config = worker.load_config()
 
-    def test_config_is_explicitly_paused_with_two_role_profiles(self):
-        self.assertEqual(self.config["status"], "proposed_paused")
-        self.assertFalse(self.config["activation"]["enabled"])
-        self.assertEqual(self.config["activation"]["enabled_roles"], [])
+    def test_checked_in_worker_is_installed_for_both_local_roles(self):
+        self.assertEqual(self.config["status"], "installed_local")
+        self.assertTrue(self.config["activation"]["enabled"])
+        self.assertEqual(
+            self.config["activation"]["enabled_roles"],
+            ["repository_reviewer", "scoped_maker"],
+        )
         self.assertEqual(
             set(self.config["roles"]), {"repository_reviewer", "scoped_maker"}
         )
-        with self.assertRaisesRegex(worker.WorkerError, "proposed and paused"):
-            worker.require_activation(self.config)
+        with mock.patch.object(worker.bridge, "exact_commit", return_value="a" * 40):
+            worker.require_activation(
+                self.config, {"U2_EXECUTOR_TRUSTED_SHA": "a" * 40}
+            )
 
     def test_protected_path_config_cannot_be_weakened(self):
         weakened = copy.deepcopy(self.config)
@@ -726,7 +731,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(worker.WorkerError, "Reviewer modified"):
                 worker.validate_postconditions(repository.root, request, self.config, review)
 
-    def test_verify_request_works_while_execution_remains_paused(self):
+    def test_verify_request_works_without_starting_a_model_call(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = GitRepository(directory)
             request = repository.maker_request()
@@ -752,9 +757,9 @@ class LocalClaudeWorkerTests(unittest.TestCase):
                 with mock.patch("builtins.print") as output:
                     worker.verify(args)
             payload = json.loads(output.call_args.args[0])
-            self.assertEqual(payload["status"], "VERIFIED_PAUSED")
+            self.assertEqual(payload["status"], "VERIFIED")
 
-    def test_run_denies_before_reading_request_while_config_is_paused(self):
+    def test_run_denies_before_reading_request_without_the_pinned_runtime_sha(self):
         args = argparse.Namespace(
             repo=Path("/not/read"),
             request=Path("/not/read/request.json"),
@@ -762,8 +767,10 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             ledger=Path("/not/read/ledger.json"),
             config=worker.CONFIG_PATH,
         )
-        with self.assertRaisesRegex(worker.WorkerError, "proposed and paused"):
-            worker.run(args)
+        with mock.patch.object(worker.bridge, "exact_commit", return_value="a" * 40):
+            with mock.patch.dict(worker.os.environ, {}, clear=True):
+                with self.assertRaisesRegex(worker.WorkerError, "exact trusted SHA"):
+                    worker.run(args)
 
     def test_run_rejects_an_untracked_activation_config_before_loading_it(self):
         with tempfile.TemporaryDirectory() as directory:

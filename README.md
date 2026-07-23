@@ -120,10 +120,10 @@ and passes the same strict review schema. Prose, Markdown, surrounding text,
 duplicate-key JSON and schema drift are preserved as feedback but force
 `CHANGES_REQUESTED`; unstructured output can never authorize continuation.
 
-## Proposed U2 local role workers
+## U2 local role workers
 
-`scripts/local_claude_worker.py` is a separate, still-paused foundation for the
-local subscription-based U2 loop. It does not weaken or replace the no-tools U1
+`scripts/local_claude_worker.py` is the local subscription-based U2 execution
+lane. It does not weaken or replace the no-tools U1
 review bridge. It defines two explicit execution profiles:
 
 - `repository_reviewer` receives only the trusted local `read_diff`,
@@ -177,19 +177,15 @@ real usage; the fixed caps remain the spend backstop.
 The worker no longer relies on Claude Code's built-in Read/Edit path-rule
 precedence for repository isolation. The local MCP server is part of the pinned
 executor source and its scope behavior is covered by direct traversal,
-sensitive-file, untracked-file, symlink, hard-link, read-only-role and exact-write tests. The
-checked-in worker nevertheless remains paused pending a separately reviewed
-activation change.
+sensitive-file, untracked-file, symlink, hard-link, read-only-role and exact-write tests.
 
-The checked-in U2 config is `proposed_paused`, has no enabled roles, and carries
-no approval identity or activation window. `verify-request` may prove that a
-signed request and clean worktree are coherent, but `run` denies before a model
-call until a separately reviewed packet enables a canonical reviewer-first role
-set for at most seven days, an exact executor SHA is installed in
-`U2_EXECUTOR_TRUSTED_SHA` and matches the running commit, and the controller key,
-the pinned attended-approval public key, pause release, budget and activation
-packet are approved. Enabling the read-only Reviewer does not implicitly enable
-the scoped Maker. The worker never
+The checked-in U2 config is `installed_local` and makes both bounded roles
+available. This is a one-time code installation, not a seven-day activation
+packet. It still cannot make a model call unless the user-owned runner is set to
+`active`, its exact executor SHA matches `U2_EXECUTOR_TRUSTED_SHA`, the controller
+and owner approval keys are available locally, and a current signed work queue
+contains the exact task. The runner's external `paused` switch is the persistent
+kill switch; individual queue releases expire within seven days. The worker never
 commits, pushes, opens a PR, merges, deploys or clears a pause. Those remain
 deterministic controller responsibilities after machine-derived postconditions
 pass.
@@ -266,9 +262,9 @@ at most one operation per polling cycle, and has zero automatic retries. One
 released queue can advance multiple distinct work items over successive cycles;
 a failed item is not silently retried.
 
-The checked-in example at `config/u2-user-runner.example.json` is paused and is
-not an activation packet. After a reviewed runtime commit and time-bounded U2
-activation exist, the user creates a private external config and can verify it:
+The checked-in example at `config/u2-user-runner.example.json` is paused. After
+the reviewed runtime commit is integrated, the user creates one private external
+config, pins that commit, and can verify it:
 
 ```bash
 chmod 600 "$HOME/Library/Application Support/treeXchange-u2/runner.json"
@@ -285,11 +281,11 @@ python3 scripts/u2_user_runner.py install-launch-agent \
   --config "$HOME/Library/Application Support/treeXchange-u2/runner.json"
 ```
 
-Changing the external runner config to `paused`, expiring the U2 activation, or
-exhausting a signed queue stops model operations without relying on Codex. The
-first three pilots remain exact-digest attended releases. A later, separately
-reviewed milestone may introduce a signed program-stage mandate; that broader
-authority is not implemented or implied by this runner.
+Changing the external runner config to `paused` or exhausting/expiring a signed
+queue stops model operations without relying on Codex. A queue release is the
+stage-sized mandate: it can contain one to seven exact work items and expires in
+at most seven days. The installed worker itself does not need weekly code
+reactivation.
 
 ## OMC collaboration lane
 
