@@ -475,9 +475,18 @@ def require_local_subscription_auth() -> None:
 
 def claude_cli_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Return the schema subset accepted by Claude Code without mutating the source."""
-    value = dict(schema)
-    value.pop("$schema", None)
-    return value
+    def sanitize(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: sanitize(item)
+                for key, item in value.items()
+                if key != "$schema"
+            }
+        if isinstance(value, list):
+            return [sanitize(item) for item in value]
+        return value
+
+    return sanitize(schema)
 
 
 def claude_child_environment(
