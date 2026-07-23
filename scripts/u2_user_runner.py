@@ -57,7 +57,7 @@ ALLOWED_REPOSITORIES = {
     "leeshsnu/treeXchange-agent-executor",
     "leeshsnu/treeXchange-season2",
 }
-INHERITED_ENVIRONMENT = {
+BASE_INHERITED_ENVIRONMENT = {
     "HOME",
     "LANG",
     "LC_ALL",
@@ -68,8 +68,8 @@ INHERITED_ENVIRONMENT = {
     "TMPDIR",
     "USER",
     "XDG_CONFIG_HOME",
-    "CLAUDE_CODE_OAUTH_TOKEN",
 }
+RUN_INHERITED_ENVIRONMENT = BASE_INHERITED_ENVIRONMENT | {"CLAUDE_CODE_OAUTH_TOKEN"}
 
 
 class RunnerError(Exception):
@@ -320,7 +320,7 @@ def load_attempts(state: Path) -> dict[str, Any]:
 
 def runner_environment(config: dict[str, Any], repository: dict[str, Any]) -> dict[str, str]:
     source = os.environ
-    environment = {key: source[key] for key in INHERITED_ENVIRONMENT if key in source}
+    environment = {key: source[key] for key in RUN_INHERITED_ENVIRONMENT if key in source}
     try:
         controller_key = private_file_bytes(
             Path(config["controller_key_path"]), "controller key"
@@ -352,7 +352,9 @@ def runner_environment(config: dict[str, Any], repository: dict[str, Any]) -> di
 
 def inspection_environment(repository: dict[str, Any]) -> dict[str, str]:
     source = os.environ
-    environment = {key: source[key] for key in INHERITED_ENVIRONMENT if key in source}
+    environment = {
+        key: source[key] for key in BASE_INHERITED_ENVIRONMENT if key in source
+    }
     excludes = repository.get("git_excludes_file")
     if excludes:
         environment.update(
@@ -404,12 +406,10 @@ def actionable_queue(value: dict[str, Any] | None) -> bool:
         return False
     maximum = value.get("maximum_operations")
     reserved = value.get("operations_reserved")
-    counts = value.get("counts")
     return (
         maximum == 1
         and reserved == 0
-        and isinstance(counts, dict)
-        and counts.get("planned", 0) + counts.get("ready", 0) > 0
+        and value.get("next_ready") is True
     )
 
 

@@ -203,6 +203,7 @@ class U2UserRunnerTests(unittest.TestCase):
                     "status": "released",
                     "queue_id": "u2-runner-test-01",
                     "counts": {"planned": 1, "ready": 0},
+                    "next_ready": True,
                     "operations_reserved": 0,
                     "maximum_operations": 1,
                     "approval_digest": "a" * 64,
@@ -241,6 +242,7 @@ class U2UserRunnerTests(unittest.TestCase):
                     "status": "released",
                     "queue_id": "u2-runner-test-02",
                     "counts": {"planned": 1, "ready": 0},
+                    "next_ready": True,
                     "operations_reserved": 0,
                     "maximum_operations": 1,
                     "approval_digest": "b" * 64,
@@ -280,6 +282,32 @@ class U2UserRunnerTests(unittest.TestCase):
             self.assertNotIn("ANTHROPIC_API_KEY", environment)
             self.assertNotIn("TREEXCHANGE_U2_APPROVAL_PRIVATE_KEY", environment)
             self.assertEqual(environment["TREEXCHANGE_U2_CONTROLLER_KEY"], "x" * 40)
+
+    def test_inspection_receives_neither_controller_key_nor_claude_oauth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CLAUDE_CODE_OAUTH_TOKEN": "must-not-pass-to-inspection",
+                    "TREEXCHANGE_U2_CONTROLLER_KEY": "must-not-pass-to-inspection",
+                },
+                clear=False,
+            ):
+                environment = runner.inspection_environment(
+                    fixture.config()["repositories"][0]
+                )
+            self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", environment)
+            self.assertNotIn("TREEXCHANGE_U2_CONTROLLER_KEY", environment)
+
+    def test_dependency_blocked_queue_does_not_consume_runner_attempt(self):
+        value = {
+            "status": "released",
+            "operations_reserved": 0,
+            "maximum_operations": 1,
+            "next_ready": False,
+        }
+        self.assertFalse(runner.actionable_queue(value))
 
 
 if __name__ == "__main__":
