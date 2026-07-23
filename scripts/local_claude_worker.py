@@ -906,7 +906,7 @@ def claude_command(
         "--output-format",
         "json",
         "--json-schema",
-        json.dumps(schema, separators=(",", ":")),
+        json.dumps(bridge.claude_cli_schema(schema), separators=(",", ":")),
         "--tools",
         "",
         "--mcp-config",

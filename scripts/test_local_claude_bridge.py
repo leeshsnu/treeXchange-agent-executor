@@ -45,6 +45,27 @@ def ledger_attempt(index, *, work_item="OPS-03", window="ops-03-window-01", day=
 
 
 class BridgeTests(unittest.TestCase):
+    def test_claude_cli_schema_strips_only_the_unsupported_meta_schema(self):
+        source = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://treexchange.local/example.json",
+            "type": "object",
+            "properties": {
+                "nested": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "string",
+                }
+            },
+        }
+
+        result = bridge.claude_cli_schema(source)
+
+        self.assertNotIn("$schema", result)
+        self.assertNotIn("$schema", result["properties"]["nested"])
+        self.assertEqual(result["$id"], source["$id"])
+        self.assertIn("$schema", source)
+        self.assertIn("$schema", source["properties"]["nested"])
+
     def test_review_diff_uses_standard_bounded_context(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
         self.assertIn('"--unified=3"', source)
@@ -100,8 +121,17 @@ class BridgeTests(unittest.TestCase):
             clear=True,
         ):
             with mock.patch.object(bridge.subprocess, "run", return_value=completed) as run:
-                result = bridge.invoke_claude("bounded", {"type": "object"}, 60)
+                result = bridge.invoke_claude(
+                    "bounded",
+                    {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                    },
+                    60,
+                )
         command = run.call_args.args[0]
+        cli_schema = json.loads(command[command.index("--json-schema") + 1])
+        self.assertNotIn("$schema", cli_schema)
         self.assertEqual(
             command[command.index("--model") + 1], bridge.DEFAULT_MODEL
         )
