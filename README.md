@@ -120,10 +120,10 @@ and passes the same strict review schema. Prose, Markdown, surrounding text,
 duplicate-key JSON and schema drift are preserved as feedback but force
 `CHANGES_REQUESTED`; unstructured output can never authorize continuation.
 
-## Proposed U2 local role workers
+## U2 local role workers
 
-`scripts/local_claude_worker.py` is a separate, still-paused foundation for the
-local subscription-based U2 loop. It does not weaken or replace the no-tools U1
+`scripts/local_claude_worker.py` is the local subscription-based U2 execution
+lane. It does not weaken or replace the no-tools U1
 review bridge. It defines two explicit execution profiles:
 
 - `repository_reviewer` receives only the trusted local `read_diff`,
@@ -134,9 +134,10 @@ review bridge. It defines two explicit execution profiles:
   changed-path scope and returns it as untrusted tool evidence. The trusted MCP
   writes an owner-only one-use receipt; the controller rejects the review unless
   that receipt machine-matches the signed Base, Head, digest and byte count.
-  Claude's built-in file tools are disabled. Full-file context under workflow, config, operations and
-  governance control paths remains unavailable; only exact signed diff hunks
-  may include changes there. The local tool server enforces signed
+  Claude's built-in file tools are disabled. Signed, task-required project
+  contracts under workflow, config, operations and governance paths may be
+  read as untrusted context, while Maker writes to those paths remain blocked.
+  The local tool server enforces signed
   repository-relative scopes on every call; shell, network, third-party MCP,
   subagent and edit tools are unavailable, and any resulting worktree change
   quarantines the run.
@@ -176,57 +177,54 @@ real usage; the fixed caps remain the spend backstop.
 The worker no longer relies on Claude Code's built-in Read/Edit path-rule
 precedence for repository isolation. The local MCP server is part of the pinned
 executor source and its scope behavior is covered by direct traversal,
-sensitive-file, untracked-file, symlink, hard-link, read-only-role and exact-write tests. The
-checked-in worker nevertheless remains paused pending a separately reviewed
-activation change.
+sensitive-file, untracked-file, symlink, hard-link, read-only-role and exact-write tests.
 
-The checked-in U2 config is `proposed_paused`, has no enabled roles, and carries
-no approval identity or activation window. `verify-request` may prove that a
-signed request and clean worktree are coherent, but `run` denies before a model
-call until a separately reviewed packet enables a canonical reviewer-first role
-set for at most seven days, an exact executor SHA is installed in
-`U2_EXECUTOR_TRUSTED_SHA` and matches the running commit, and the controller key,
-the pinned attended-approval public key, pause release, budget and activation
-packet are approved. Enabling the read-only Reviewer does not implicitly enable
-the scoped Maker. The worker never
-commits, pushes, opens a PR, merges, deploys or clears a pause. Those remain
-deterministic controller responsibilities after machine-derived postconditions
-pass.
+The checked-in U2 config is `installed_local` and makes both bounded roles
+available. This is a one-time code installation, not a seven-day activation
+packet. It still cannot make a model call unless the user-owned runner is set to
+`active`, its exact executor SHA matches `U2_EXECUTOR_TRUSTED_SHA`, the controller
+and owner approval keys are available locally, the approval public key matches
+the SHA-256 fingerprint pinned in the owner-only runner config, and a current
+signed work queue contains the exact task. The runner's external `paused` switch
+is the persistent kill switch; individual queue releases expire within seven
+days. The worker never commits, pushes, opens a PR, merges, deploys or clears a
+pause. Those remain deterministic controller responsibilities after
+machine-derived postconditions pass.
 
-### Deterministic U2 Reviewer controller
+### Deterministic U2 Maker and Reviewer controller
 
-`scripts/u2_controller.py` supplies the missing first-stage manager for the
-read-only Reviewer lane. Its queue remains owner-only and ignored under the
+`scripts/u2_controller.py` manages both the implementation and review lanes.
+Its queue remains owner-only and ignored under the
 assigned repository's `.agent-state` directory. A draft queue may be inspected
 while U2 is paused, but it cannot execute. The controller:
 
 - validates one bounded dependency graph and selects only a dependency-ready
-  Reviewer item;
+  Maker or Reviewer item;
 - hashes the immutable work manifest, including objective, acceptance criteria,
   role, exact Base and Head, branch, path scopes, model profile and dependencies;
 - requires an attended `release` command to present the exact user-approved
   manifest digest, then signs the release metadata with a separate Ed25519
-  approval private key whose public-key digest is pinned in the active packet;
-- limits the first release to the read-only Reviewer and exactly one model
-  operation;
-- atomically claims the signed release once in an owner-only external receipt
-  under shared Git state before queue state advances, so rewinding the mutable
-  queue alone cannot replay an attended release;
+  approval private key whose public-key digest is pinned in the owner-only runner
+  config for an installed-local worker or in the active packet for a legacy
+  time-bounded activation;
+- authorizes one to seven explicitly listed work items in one release and
+  atomically claims each item once before queue state advances;
 - creates an owner-only, single-use signed worker request, invokes the same
   bounded U2 worker with the explicit repository-wide shared ledger, and
   independently binds the returned result to the request, repository and target
   Head;
+- leaves a successful Maker's bounded working-tree change available for Codex
+  verification and records its machine-derived changed paths and digest;
 - moves the item to `completed`, `changes_requested`, or fail-closed `failed`,
   and appends a sanitized machine event so a local dashboard can consume state
   without receiving prompt, diff, credential or full model-output content.
 
-The first controller does not create a branch, edit source, commit, push, open a
-PR, merge, deploy, clear pause, retry automatically, or activate the worker. A
-later launcher may call `run-next` only after the exact controller code, paused
-queue digest, time-bounded Reviewer activation and local secrets receive their
-separate approvals. Reviewer requests may target only signed `agent/`, `codex/`
-or `claude/` feature branches; the Maker remains restricted to `claude/`
-branches.
+Claude does not receive shell or Git tools. The controller itself does not
+create a branch, commit, push, open a PR, merge, deploy, clear pause, retry
+automatically, or activate the worker. Maker requests run only on a clean,
+pre-created `claude/` branch and may change only the exact files listed in the
+released work item. Reviewer requests may target signed `agent/`, `codex/` or
+`claude/` feature branches.
 
 The controller HMAC key and attended Ed25519 approval key have different jobs.
 The scheduled controller receives the HMAC key so it can authorize one-use
@@ -254,7 +252,7 @@ an execution boundary, not an approval bypass:
 2. The deterministic controller may release only the exact queue digest that
    received attended user approval.
 3. The user-owned runner scans only explicitly allowlisted worktrees and invokes
-   `run-next` only for a current, signed, unconsumed Reviewer release.
+   `run-next` only for a current, signed, unconsumed Maker or Reviewer item.
 4. Claude uses the user's local Claude Code subscription session. The structured
    result returns to owner-only local state for later Codex verification.
 
@@ -263,12 +261,14 @@ approval private key. Its config, controller key, public approval key and
 attempt ledger must live in an owner-only directory outside every managed Git
 worktree. It verifies a clean exact executor SHA before each cycle, passes no API
 key to the controller, reserves an external attempt record before launch, runs
-at most one operation per cycle, and has zero automatic retries. A failed launch
-therefore requires a new explicit release rather than being polled repeatedly.
+at most one operation per polling cycle, and has zero automatic retries. One
+released queue can advance multiple distinct work items over successive cycles;
+a failed item is not silently retried.
 
-The checked-in example at `config/u2-user-runner.example.json` is paused and is
-not an activation packet. After a reviewed runtime commit and time-bounded U2
-activation exist, the user creates a private external config and can verify it:
+The checked-in example at `config/u2-user-runner.example.json` is paused. After
+the reviewed runtime commit is integrated, the user creates one private external
+config, pins that commit and the approval public-key SHA-256 fingerprint, and can
+verify it:
 
 ```bash
 chmod 600 "$HOME/Library/Application Support/treeXchange-u2/runner.json"
@@ -285,11 +285,18 @@ python3 scripts/u2_user_runner.py install-launch-agent \
   --config "$HOME/Library/Application Support/treeXchange-u2/runner.json"
 ```
 
-Changing the external runner config to `paused`, expiring the U2 activation, or
-exhausting a signed queue stops model operations without relying on Codex. The
-first three pilots remain exact-digest attended releases. A later, separately
-reviewed milestone may introduce a signed program-stage mandate; that broader
-authority is not implemented or implied by this runner.
+Changing the external runner config to `paused` or exhausting/expiring a signed
+queue stops model operations without relying on Codex. A queue release is the
+stage-sized mandate: it can contain one to seven exact work items and expires in
+at most seven days. The installed worker itself does not need weekly code
+reactivation.
+
+Repository context is also bounded independently of write scope. Claude cannot
+read `.github`, `config`, `ops`, Git-private state, local agent state, Claude
+settings or environment files. A signed task may read `docs/governance` because
+those project contracts define the work, but Maker writes to that directory
+remain forbidden. Bracketed Next.js route filenames are compared as literal
+paths; no glob or regular-expression expansion is used.
 
 ## OMC collaboration lane
 

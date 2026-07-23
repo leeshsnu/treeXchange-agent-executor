@@ -137,15 +137,20 @@ class LocalClaudeWorkerTests(unittest.TestCase):
     def setUp(self):
         self.config = worker.load_config()
 
-    def test_config_is_explicitly_paused_with_two_role_profiles(self):
-        self.assertEqual(self.config["status"], "proposed_paused")
-        self.assertFalse(self.config["activation"]["enabled"])
-        self.assertEqual(self.config["activation"]["enabled_roles"], [])
+    def test_checked_in_worker_is_installed_for_both_local_roles(self):
+        self.assertEqual(self.config["status"], "installed_local")
+        self.assertTrue(self.config["activation"]["enabled"])
+        self.assertEqual(
+            self.config["activation"]["enabled_roles"],
+            ["repository_reviewer", "scoped_maker"],
+        )
         self.assertEqual(
             set(self.config["roles"]), {"repository_reviewer", "scoped_maker"}
         )
-        with self.assertRaisesRegex(worker.WorkerError, "proposed and paused"):
-            worker.require_activation(self.config)
+        with mock.patch.object(worker.bridge, "exact_commit", return_value="a" * 40):
+            worker.require_activation(
+                self.config, {"U2_EXECUTOR_TRUSTED_SHA": "a" * 40}
+            )
 
     def test_protected_path_config_cannot_be_weakened(self):
         weakened = copy.deepcopy(self.config)
@@ -292,6 +297,28 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "exact writable file"):
             worker.validate_request(request, self.config, NOW)
 
+    def test_next_dynamic_route_is_a_valid_exact_maker_path(self):
+        request = work_request()
+        request["read_paths"] = ["apps/web/**"]
+        request["allowed_paths"] = ["apps/web/app/[...slug]/page.tsx"]
+        request = sign_request(request)
+        validated = worker.validate_request(request, self.config, NOW)
+        self.assertEqual(
+            validated["allowed_paths"], ["apps/web/app/[...slug]/page.tsx"]
+        )
+        self.assertTrue(
+            worker.path_matches(
+                "apps/web/app/[...slug]/page.tsx",
+                "apps/web/app/[...slug]/page.tsx",
+            )
+        )
+        self.assertFalse(
+            worker.path_matches(
+                "apps/web/app/catch-all/page.tsx",
+                "apps/web/app/[...slug]/page.tsx",
+            )
+        )
+
     def test_sensitive_dotenv_read_scope_is_rejected(self):
         request = work_request("repository_reviewer")
         request["read_paths"] = ["services/model/.env.local"]
@@ -313,19 +340,43 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "credential paths"):
             worker.validate_request(request, self.config, NOW)
 
-    def test_protected_control_context_is_denied_for_both_roles(self):
+    def test_governance_contracts_are_readable_but_remain_blocked_for_maker_writes(self):
+        for role in ("repository_reviewer", "scoped_maker"):
+            for path in ("docs/governance/status.md",):
+                with self.subTest(role=role, path=path):
+                    request = work_request(role)
+                    if role == "scoped_maker":
+                        request["read_paths"] = [
+                            path,
+                            "services/model/HANDOFF_NEEDED.md",
+                        ]
+                        request["allowed_paths"] = ["services/model/HANDOFF_NEEDED.md"]
+                    else:
+                        request["read_paths"] = [path]
+                    request = sign_request(request)
+                    validated = worker.validate_request(request, self.config, NOW)
+                    self.assertIn(path, validated["read_paths"])
+
+                    if role == "scoped_maker":
+                        request["allowed_paths"] = [path]
+                        request = sign_request(request)
+                        with self.assertRaisesRegex(worker.WorkerError, "protected path"):
+                            worker.validate_request(request, self.config, NOW)
+
+    def test_control_plane_context_remains_unreadable_for_both_roles(self):
         for role in ("repository_reviewer", "scoped_maker"):
             for path in (
                 ".github/workflows/ci.yml",
                 "config/u2-local-worker.json",
                 "ops/runbook.md",
-                "docs/governance/status.md",
             ):
                 with self.subTest(role=role, path=path):
                     request = work_request(role)
                     request["read_paths"] = [path]
                     if role == "scoped_maker":
-                        request["allowed_paths"] = ["services/model/HANDOFF_NEEDED.md"]
+                        request["allowed_paths"] = [
+                            "services/model/HANDOFF_NEEDED.md"
+                        ]
                     request = sign_request(request)
                     with self.assertRaisesRegex(worker.WorkerError, "credential paths"):
                         worker.validate_request(request, self.config, NOW)
@@ -705,7 +756,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(worker.WorkerError, "Reviewer modified"):
                 worker.validate_postconditions(repository.root, request, self.config, review)
 
-    def test_verify_request_works_while_execution_remains_paused(self):
+    def test_verify_request_works_without_starting_a_model_call(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = GitRepository(directory)
             request = repository.maker_request()
@@ -731,9 +782,9 @@ class LocalClaudeWorkerTests(unittest.TestCase):
                 with mock.patch("builtins.print") as output:
                     worker.verify(args)
             payload = json.loads(output.call_args.args[0])
-            self.assertEqual(payload["status"], "VERIFIED_PAUSED")
+            self.assertEqual(payload["status"], "VERIFIED")
 
-    def test_run_denies_before_reading_request_while_config_is_paused(self):
+    def test_run_denies_before_reading_request_without_the_pinned_runtime_sha(self):
         args = argparse.Namespace(
             repo=Path("/not/read"),
             request=Path("/not/read/request.json"),
@@ -741,8 +792,10 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             ledger=Path("/not/read/ledger.json"),
             config=worker.CONFIG_PATH,
         )
-        with self.assertRaisesRegex(worker.WorkerError, "proposed and paused"):
-            worker.run(args)
+        with mock.patch.object(worker.bridge, "exact_commit", return_value="a" * 40):
+            with mock.patch.dict(worker.os.environ, {}, clear=True):
+                with self.assertRaisesRegex(worker.WorkerError, "exact trusted SHA"):
+                    worker.run(args)
 
     def test_run_rejects_an_untracked_activation_config_before_loading_it(self):
         with tempfile.TemporaryDirectory() as directory:

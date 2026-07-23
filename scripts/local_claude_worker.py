@@ -79,7 +79,6 @@ SENSITIVE_READ_PATHS = (
     ".github/**",
     "config/**",
     "ops/**",
-    "docs/governance/**",
 )
 EXPECTED_BLOCKED_MAKER_PATHS = [
     ".git/**",
@@ -186,10 +185,17 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
     if (
         not isinstance(approver, dict)
         or set(approver)
-        != {"key_id", "public_key_path_environment", "public_key_sha256"}
+        != {
+            "key_id",
+            "public_key_path_environment",
+            "public_key_sha256_environment",
+            "public_key_sha256",
+        }
         or approver.get("key_id") != "u2-attended-approval-v1"
         or approver.get("public_key_path_environment")
         != "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_PATH"
+        or approver.get("public_key_sha256_environment")
+        != "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_SHA256"
         or (
             approver.get("public_key_sha256") is not None
             and SIGNATURE_RE.fullmatch(approver["public_key_sha256"]) is None
@@ -235,6 +241,21 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
             fail("paused U2 activation fields must remain empty and false", INVALID)
         if approver["public_key_sha256"] is not None:
             fail("paused U2 approver key pin must remain empty", INVALID)
+    elif status == "installed_local":
+        if activation != {
+            "enabled": True,
+            "enabled_roles": ["repository_reviewer", "scoped_maker"],
+            "approved_by": "local-owner",
+            "approved_at": None,
+            "expires_at": None,
+            "trusted_sha_environment": "U2_EXECUTOR_TRUSTED_SHA",
+            "requires_controller_signature": True,
+            "requires_control_release_id": True,
+            "requires_budget_reservation_id": True,
+        }:
+            fail("installed local U2 roles must match the fixed operating contract", INVALID)
+        if approver["public_key_sha256"] is not None:
+            fail("installed local U2 uses the owner-only external approval key", INVALID)
     elif status == "approved_active":
         enabled_roles = activation.get("enabled_roles")
         if activation.get("enabled") is not True:
@@ -312,10 +333,12 @@ def approval_public_key_bytes(
         or final.st_size != metadata.st_size
     ):
         fail("U2 attended approver public key changed during inspection")
-    expected = approver.get("public_key_sha256")
-    if not isinstance(expected, str) or not hmac.compare_digest(
-        hashlib.sha256(value).hexdigest(), expected
-    ):
+    expected = approver.get("public_key_sha256") or source.get(
+        approver["public_key_sha256_environment"]
+    )
+    if not isinstance(expected, str) or SIGNATURE_RE.fullmatch(expected) is None:
+        fail("U2 attended approver public key fingerprint is unavailable")
+    if not hmac.compare_digest(hashlib.sha256(value).hexdigest(), expected):
         fail("U2 attended approver public key does not match the active pin")
     return value
 
@@ -326,15 +349,17 @@ def require_activation(
     now: dt.datetime | None = None,
 ) -> None:
     activation = config.get("activation")
-    if config.get("status") != "approved_active" or not isinstance(activation, dict):
+    status = config.get("status")
+    if status not in {"approved_active", "installed_local"} or not isinstance(activation, dict):
         fail("U2 local worker remains proposed and paused")
     if activation.get("enabled") is not True:
         fail("U2 local worker activation is disabled")
-    approved = parse_utc(activation.get("approved_at", ""), "approved_at")
-    expires = parse_utc(activation.get("expires_at", ""), "expires_at")
     current = now or dt.datetime.now(dt.timezone.utc)
-    if not approved <= current < expires:
-        fail("U2 local worker is outside its approved activation window")
+    if status == "approved_active":
+        approved = parse_utc(activation.get("approved_at", ""), "approved_at")
+        expires = parse_utc(activation.get("expires_at", ""), "expires_at")
+        if not approved <= current < expires:
+            fail("U2 local worker is outside its approved activation window")
     source = os.environ if environ is None else environ
     trusted_sha = source.get(activation.get("trusted_sha_environment", ""))
     running_sha = bridge.exact_commit(ROOT, "HEAD")
@@ -376,7 +401,7 @@ def normalize_scope_path(value: str, label: str) -> str:
     raw = value[:-3] if recursive else value
     if not raw or raw.startswith("/") or raw.endswith("/"):
         fail(f"{label} must be repository-relative", INVALID)
-    if "*" in raw or "?" in raw or "[" in raw:
+    if "*" in raw or "?" in raw:
         fail(f"{label} allows only exact paths or a trailing /**", INVALID)
     parts = PurePosixPath(raw).parts
     if not parts or any(part in {"", ".", ".."} for part in parts):

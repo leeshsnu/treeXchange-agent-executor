@@ -64,8 +64,12 @@ def private_path(relative: str) -> bool:
 
 
 def sensitive_path(relative: str) -> bool:
+    return private_path(relative)
+
+
+def protected_context_path(relative: str) -> bool:
     lowered = relative.lower()
-    return private_path(relative) or any(
+    return any(
         lowered == scope or lowered.startswith(scope + "/")
         for scope in PROTECTED_CONTEXT_SCOPES
     )
@@ -264,6 +268,8 @@ class RepositoryTools:
         if not any(path_matches(relative, scope) for scope in self.read_scopes):
             raise ScopeError("path is outside the signed readable scopes")
         if writable:
+            if protected_context_path(relative):
+                raise ScopeError("protected project contracts are read-only")
             if self.role != "scoped_maker" or relative not in self.write_paths:
                 raise ScopeError("path is outside the signed writable files")
         cursor = self.repo

@@ -29,12 +29,21 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
         target.mkdir(parents=True)
         config = self.repo / "config"
         config.mkdir()
+        operations = self.repo / "ops"
+        operations.mkdir()
+        governance = self.repo / "docs/governance"
+        governance.mkdir(parents=True)
+        workflows = self.repo / ".github/workflows"
+        workflows.mkdir(parents=True)
         (target / "README.md").write_text("alpha\nneedle here\n", encoding="utf-8")
         (target / "HANDOFF.md").write_text("initial\n", encoding="utf-8")
         (target / ".env.local").write_text("PRIVATE=value\n", encoding="utf-8")
         (target / "CLAUDE.md").write_text("untrusted instructions\n", encoding="utf-8")
         (self.repo / "OUTSIDE.md").write_text("outside\n", encoding="utf-8")
         (config / "policy.json").write_text('{"mode":"paused"}\n', encoding="utf-8")
+        (operations / "runbook.md").write_text("contract\n", encoding="utf-8")
+        (governance / "status.md").write_text("reviewed spec\n", encoding="utf-8")
+        (workflows / "ci.yml").write_text("name: ci\n", encoding="utf-8")
         subprocess.run(["git", "init", "-b", "main"], cwd=self.repo, check=True, capture_output=True)
         subprocess.run(
             ["git", "config", "user.name", "MCP Test"],
@@ -159,7 +168,8 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
             "ops/runbook.md",
             "docs/governance/status.md",
         ):
-            self.assertTrue(mcp.sensitive_path(path))
+            self.assertFalse(mcp.sensitive_path(path))
+            self.assertTrue(mcp.protected_context_path(path))
             tools = mcp.RepositoryTools(
                 self.repo,
                 "repository_reviewer",
@@ -172,8 +182,17 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
                 100_000,
                 self.repo / ".agent-state" / f"receipt-{uuid.uuid4().hex}.json",
             )
-            with self.assertRaises(mcp.ScopeError):
-                tools.call("read_file", {"path": path})
+            self.assertTrue(tools.call("read_file", {"path": path})["content"])
+
+            maker = mcp.RepositoryTools(
+                self.repo,
+                "scoped_maker",
+                [path],
+                [path],
+                100_000,
+            )
+            with self.assertRaisesRegex(mcp.ScopeError, "read-only"):
+                maker.call("write_file", {"path": path, "content": "changed\n"})
 
     def test_search_fails_closed_when_a_listed_file_cannot_be_read(self):
         credential = self.repo / "services/model/CREDENTIAL.txt"

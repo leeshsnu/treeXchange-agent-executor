@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""User-owned macOS runner for already released U2 Reviewer queues.
+"""User-owned macOS runner for already released U2 Maker and Reviewer queues.
 
 This process is intentionally started by the user, outside Codex.  It never
 releases a queue, signs an approval, edits source, pushes, merges, or deploys.
-It may consume one already signed Reviewer operation and records a local
-attempt before invoking the controller so a failed launch is never retried
-automatically.
+It consumes at most one already signed work item per polling cycle and records
+each item attempt before invoking the controller so a failed launch is never
+retried automatically.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ RUNNER_FIELDS = {
     "executor_config",
     "controller_key_path",
     "approval_public_key_path",
+    "approval_public_key_sha256",
     "repositories",
 }
 REPOSITORY_FIELDS = {
@@ -167,6 +168,11 @@ def validate_config(value: dict[str, Any]) -> dict[str, Any]:
     approval_public = absolute_path(
         value.get("approval_public_key_path"), "approval_public_key_path"
     )
+    approval_public_digest = value.get("approval_public_key_sha256")
+    if not isinstance(approval_public_digest, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", approval_public_digest
+    ):
+        fail("approval_public_key_sha256 must be an exact lowercase SHA-256", INVALID)
     executor_config = value.get("executor_config")
     if (
         not isinstance(executor_config, str)
@@ -218,7 +224,11 @@ def validate_config(value: dict[str, Any]) -> dict[str, Any]:
         if not (executor / executor_config).is_file():
             fail("active U2 user-runner executor_config is unavailable")
         private_file_bytes(controller_key, "controller key")
-        private_file_bytes(approval_public, "approval public key")
+        approval_public_bytes = private_file_bytes(
+            approval_public, "approval public key"
+        )
+        if hashlib.sha256(approval_public_bytes).hexdigest() != approval_public_digest:
+            fail("approval public key does not match the pinned SHA-256")
         for path in exclude_files:
             if private_file_bytes(path, "git excludes file") != b".agent-state/\n":
                 fail("git excludes file may ignore only .agent-state/")
@@ -336,6 +346,9 @@ def runner_environment(config: dict[str, Any], repository: dict[str, Any]) -> di
             "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_PATH": config[
                 "approval_public_key_path"
             ],
+            "TREEXCHANGE_U2_APPROVAL_PUBLIC_KEY_SHA256": config[
+                "approval_public_key_sha256"
+            ],
         }
     )
     excludes = repository.get("git_excludes_file")
@@ -407,14 +420,25 @@ def actionable_queue(value: dict[str, Any] | None) -> bool:
     maximum = value.get("maximum_operations")
     reserved = value.get("operations_reserved")
     return (
-        maximum == 1
-        and reserved == 0
+        isinstance(maximum, int)
+        and not isinstance(maximum, bool)
+        and 1 <= maximum <= 7
+        and isinstance(reserved, int)
+        and not isinstance(reserved, bool)
+        and 0 <= reserved < maximum
         and value.get("next_ready") is True
+        and isinstance(value.get("next_work_item_id"), str)
+        and bool(value["next_work_item_id"])
+        and value.get("next_role") in {"repository_reviewer", "scoped_maker"}
     )
 
 
-def attempt_key(repository: str, queue: Path, digest: str) -> str:
-    payload = f"{repository}\0{queue.resolve()}\0{digest}".encode("utf-8")
+def attempt_key(
+    repository: str, queue: Path, digest: str, work_item_id: str
+) -> str:
+    payload = (
+        f"{repository}\0{queue.resolve()}\0{digest}\0{work_item_id}"
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -446,12 +470,17 @@ def run_cycle(
         digest = inspected.get("approval_digest")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             continue
-        key = attempt_key(repository["repository"], queue, digest)
+        work_item_id = inspected["next_work_item_id"]
+        key = attempt_key(
+            repository["repository"], queue, digest, work_item_id
+        )
         if key in ledger["attempts"]:
             continue
         ledger["attempts"][key] = {
             "at": utc_now(),
             "queue_id": inspected.get("queue_id"),
+            "work_item_id": work_item_id,
+            "role": inspected.get("next_role"),
             "approval_digest": digest,
             "status": "reserved_before_launch",
         }
@@ -483,6 +512,8 @@ def run_cycle(
             "status": "ATTEMPT_FINISHED",
             "attempted": True,
             "queue_id": inspected.get("queue_id"),
+            "work_item_id": work_item_id,
+            "role": inspected.get("next_role"),
             "approval_digest": digest,
             "outcome": outcome,
         }
