@@ -76,10 +76,6 @@ SENSITIVE_READ_PATHS = (
     ".claude/**",
     ".env",
     ".env.*",
-    ".github/**",
-    "config/**",
-    "ops/**",
-    "docs/governance/**",
 )
 EXPECTED_BLOCKED_MAKER_PATHS = [
     ".git/**",

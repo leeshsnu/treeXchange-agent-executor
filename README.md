@@ -134,9 +134,10 @@ review bridge. It defines two explicit execution profiles:
   changed-path scope and returns it as untrusted tool evidence. The trusted MCP
   writes an owner-only one-use receipt; the controller rejects the review unless
   that receipt machine-matches the signed Base, Head, digest and byte count.
-  Claude's built-in file tools are disabled. Full-file context under workflow, config, operations and
-  governance control paths remains unavailable; only exact signed diff hunks
-  may include changes there. The local tool server enforces signed
+  Claude's built-in file tools are disabled. Signed, task-required project
+  contracts under workflow, config, operations and governance paths may be
+  read as untrusted context, while Maker writes to those paths remain blocked.
+  The local tool server enforces signed
   repository-relative scopes on every call; shell, network, third-party MCP,
   subagent and edit tools are unavailable, and any resulting worktree change
   quarantines the run.

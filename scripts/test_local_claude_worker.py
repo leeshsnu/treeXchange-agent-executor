@@ -313,7 +313,7 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(worker.WorkerError, "credential paths"):
             worker.validate_request(request, self.config, NOW)
 
-    def test_protected_control_context_is_denied_for_both_roles(self):
+    def test_project_contracts_are_readable_but_remain_blocked_for_maker_writes(self):
         for role in ("repository_reviewer", "scoped_maker"):
             for path in (
                 ".github/workflows/ci.yml",
@@ -323,12 +323,23 @@ class LocalClaudeWorkerTests(unittest.TestCase):
             ):
                 with self.subTest(role=role, path=path):
                     request = work_request(role)
-                    request["read_paths"] = [path]
                     if role == "scoped_maker":
+                        request["read_paths"] = [
+                            path,
+                            "services/model/HANDOFF_NEEDED.md",
+                        ]
                         request["allowed_paths"] = ["services/model/HANDOFF_NEEDED.md"]
+                    else:
+                        request["read_paths"] = [path]
                     request = sign_request(request)
-                    with self.assertRaisesRegex(worker.WorkerError, "credential paths"):
-                        worker.validate_request(request, self.config, NOW)
+                    validated = worker.validate_request(request, self.config, NOW)
+                    self.assertIn(path, validated["read_paths"])
+
+                    if role == "scoped_maker":
+                        request["allowed_paths"] = [path]
+                        request = sign_request(request)
+                        with self.assertRaisesRegex(worker.WorkerError, "protected path"):
+                            worker.validate_request(request, self.config, NOW)
 
     def test_reviewer_can_use_exact_diff_without_repository_context_reads(self):
         request = work_request("repository_reviewer")
