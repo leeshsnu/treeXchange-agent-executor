@@ -452,13 +452,16 @@ class LocalClaudeWorkerTests(unittest.TestCase):
 
     def test_maker_tools_allow_only_signed_edit_paths_without_shell(self):
         request = worker.validate_request(work_request(), self.config, NOW)
+        schema = json.loads(worker.MAKER_SCHEMA_PATH.read_text(encoding="utf-8"))
         command = worker.claude_command(
             Path("/tmp/repo"),
             request,
             self.config,
-            {"type": "object"},
+            schema,
             worker.bridge.DEFAULT_MODEL,
         )
+        cli_schema = json.loads(command[command.index("--json-schema") + 1])
+        self.assertNotIn("$schema", cli_schema)
         self.assertEqual(command[command.index("--tools") + 1], "")
         allowed = command[command.index("--allowedTools") + 1].split(",")
         self.assertEqual(
