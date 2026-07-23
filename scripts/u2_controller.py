@@ -866,6 +866,15 @@ def inspect_queue(args: argparse.Namespace) -> None:
     counts = {state: 0 for state in sorted(ITEM_STATES)}
     for item in queue["items"]:
         counts[item["state"]] += 1
+    completed = {
+        item["work_item_id"] for item in queue["items"] if item["state"] == "completed"
+    }
+    next_ready = any(
+        item["state"] in {"planned", "ready"}
+        and set(item["depends_on"]).issubset(completed)
+        and item["attempts"] < item["maximum_attempts"]
+        for item in queue["items"]
+    )
     print(
         json.dumps(
             {
@@ -873,6 +882,7 @@ def inspect_queue(args: argparse.Namespace) -> None:
                 "queue_id": queue["queue_id"],
                 "repository": queue["repository"],
                 "counts": counts,
+                "next_ready": next_ready,
                 "operations_reserved": sum(
                     1 for event in queue["events"] if event["type"] == "model_reserved"
                 ),

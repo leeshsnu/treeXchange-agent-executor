@@ -709,6 +709,10 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             repository = GitRepository(directory)
             request = repository.maker_request()
+            request["expires_at"] = (
+                dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)
+            ).isoformat().replace("+00:00", "Z")
+            request = sign_request(request)
             state = repository.root / ".agent-state"
             state.mkdir()
             request_path = state / "request.json"

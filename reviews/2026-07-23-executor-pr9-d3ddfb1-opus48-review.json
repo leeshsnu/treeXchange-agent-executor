@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "reviewer": "Claude Code (local no-tools bridge)",
+  "repository": "leeshsnu/treeXchange-agent-executor",
+  "base_sha": "e748ca138466eee2560fe27d92ae9437b1e782db",
+  "head_sha": "d3ddfb1e7229c8a471099b7abf237f96966a3746",
+  "diff_sha256": "8ca899f6f49bcef2125f07e096df9a21d4b6a5a743e87ba8b5e07a3d1afcfa92",
+  "task_profile": "standard",
+  "requested_model": "claude-opus-4-8",
+  "default_model": "claude-opus-4-8",
+  "format": "validated_json_text",
+  "review": {
+    "verdict": "APPROVE",
+    "summary": "The user-owned U2 runner is an execution boundary that consumes one already-signed Reviewer release per cycle without releasing, signing, or bypassing approval. It enforces exact-SHA and clean-worktree checks, owner-only external state and keys, one operation per cycle, zero automatic retries via a pre-launch durable attempt claim, and strips API and approval-private keys from subprocess environments. Config drift, path escape, duplicate JSON keys, and concurrent processes fail closed. Tests exercise pause, path-escape, retry caps, credential exclusion, and single-launch reservation. No open P0, P1, or P2 finding.",
+    "findings": [
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "The clean-worktree and exact-SHA gate runs in run_cycle before queue iteration, but a race window exists between exact_executor_sha and the later run-next launch where the runtime tree could change; the window is narrow and requires local same-user tampering already able to alter owner-only state, so impact is bounded."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "The durable attempt claim is keyed on repository, resolved queue path, and approval digest. A queue file replaced with a new digest at the same path would be treated as a fresh attempt, but the controller re-verifies signature, activation, base, head, nonce, and reservation, so no unsigned or double-reserved operation results."
+      },
+      {
+        "severity": "P3",
+        "status": "open",
+        "finding": "runner_environment inherits CLAUDE_CODE_OAUTH_TOKEN for the model launch while inspection_environment omits it; the worker is documented to strip controller and GitHub credentials before invoking the local session, but that stripping is not shown in this diff and is asserted only, not proven here."
+      },
+      {
+        "severity": "none",
+        "status": "closed",
+        "finding": "The inspect controller change computes next_ready from dependency completion and remaining attempts, and actionable_queue additionally requires released state, unclaimed external release, one maximum operation, and zero reservations, preventing dependency-blocked or already-reserved queues from consuming an attempt."
+      }
+    ],
+    "verification": [
+      "Diff proves paused config performs no attempt and creates no state, via the pause test and early PAUSED return.",
+      "Diff proves state, keys, config, and excludes paths must resolve outside every managed worktree, enforced in validate_config and load_config with matching negative tests.",
+      "Diff proves a released queue is claimed in a durable owner-only ledger before exactly one controller run-next, and a repeat cycle returns IDLE without a second launch.",
+      "Diff proves a nonzero controller exit is not retried; a second cycle stays IDLE and run_calls remains one.",
+      "Diff proves API key and approval-private key are excluded from the run environment and the controller key is excluded from inspection, via environment tests.",
+      "Diff proves the LaunchAgent writer only writes a plist and returns a bootstrap command, and rejects an escaping label."
+    ],
+    "requirement_coverage": [
+      "Credential exposure: run and inspection environments allowlist inherited variables, exclude API and approval-private keys, and require a minimum-length controller key.",
+      "Budget bypass: controller re-enforces reservation, nonce, activation, base, head, role, path, and budget; runner only consumes an already-released one-operation queue.",
+      "Unsafe automation: zero automatic retries, one operation per cycle, pre-launch durable claim, and LaunchAgent that is written but never started by the tool.",
+      "Fail-closed behavior: schema drift, path escape, unclean or mismatched executor SHA, duplicate JSON keys, non-owner-only files, and concurrent lock all raise and deny.",
+      "Unsupported claims: README and SECURITY narrative match enforced code paths for boundary, allowlist, key exclusion, and single-operation limits."
+    ],
+    "residual_risk": [
+      "Worker-side stripping of controller and GitHub credentials before the model session is asserted in docs and tests external to this diff, not demonstrated in the changed files.",
+      "Same-user local tampering with the pinned runtime between the SHA check and launch is possible but requires access equal to that already needed to alter owner-only runner state."
+    ]
+  }
+}

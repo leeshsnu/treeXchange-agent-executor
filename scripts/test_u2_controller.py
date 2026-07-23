@@ -191,6 +191,7 @@ class U2ControllerTests(unittest.TestCase):
             result = json.loads(output.call_args.args[0])
             self.assertEqual(result["status"], "draft_paused")
             self.assertEqual(result["operations_reserved"], 0)
+            self.assertTrue(result["next_ready"])
             self.assertFalse(result["external_release_claimed"])
 
             invalid = paused_queue(repository)

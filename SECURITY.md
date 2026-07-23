@@ -246,6 +246,44 @@ state or invoke the user's Claude CLI directly. They instead make the pinned
 deterministic controller fail closed under crashes, queue rewinds and malformed
 state without possessing the attended approval private key.
 
+## User-owned runner boundary
+
+Codex does not start `scripts/u2_user_runner.py` and does not use it as an
+indirect route to transmit private repository content. The macOS account owner
+creates its private config and starts its LaunchAgent outside Codex. This makes
+the external disclosure decision and Claude subscription session part of a
+user-owned local process while Codex remains limited to preparing queues and
+inspecting sanitized local results.
+
+The runner is not a new authority source. It scans only the fixed repository
+allowlist, accepts only the literal `.agent-state/u2-queues` directory, and calls
+the existing controller only after its `inspect` result proves that a queue is
+released, unconsumed and limited to one operation. Queue signature, activation,
+exact Base and Head, role, path, budget, nonce, clean-worktree and result checks
+remain enforced by the controller and worker.
+
+The runner's config, state, controller key and approval public key must be
+owner-only and outside every managed Git worktree. The attended approval private
+key is never present in its environment. Inspection subprocesses receive no
+controller key. Model subprocesses receive no API key from the runner; the
+worker separately strips controller and GitHub credentials before invoking the
+local Claude Code subscription session.
+
+Before a controller launch, the runner writes a durable attempt claim into its
+external owner-only ledger. That digest is never retried automatically even if
+the controller exits before reserving a model operation. The service processes
+at most one queue per polling cycle, requires a clean exact executor commit, and
+fails closed on config drift, key exposure, a second runner process, malformed
+inspection output or path escape. Its logs contain only queue ids, digests,
+fixed status codes and timestamps, never prompts, diffs, credentials or model
+output.
+
+The LaunchAgent writer does not call `launchctl`; it returns the exact bootstrap
+command for the account owner to run once. A checked-in config or runner process
+does not activate U2, release a queue, clear a repository pause, publish a PR,
+merge or deploy. Program-stage mandates and unattended queue release remain a
+future separately approved design after the supervised pilots.
+
 ## Residual administrative risk
 
 The repository owner is also its administrator. Branch and environment

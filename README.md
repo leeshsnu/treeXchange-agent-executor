@@ -243,6 +243,54 @@ request id, nonce and budget-reservation id in the repository-wide ledger before
 Claude starts, even though the controller CLI does not accept a caller-selected
 ledger.
 
+### User-owned U2 runner
+
+`scripts/u2_user_runner.py` moves the external model invocation out of Codex and
+into a process that the macOS account owner starts directly. This separation is
+an execution boundary, not an approval bypass:
+
+1. Codex may decompose work and write a paused queue in the repository-local,
+   ignored `.agent-state/u2-queues` directory.
+2. The deterministic controller may release only the exact queue digest that
+   received attended user approval.
+3. The user-owned runner scans only explicitly allowlisted worktrees and invokes
+   `run-next` only for a current, signed, unconsumed Reviewer release.
+4. Claude uses the user's local Claude Code subscription session. The structured
+   result returns to owner-only local state for later Codex verification.
+
+The runner cannot release or sign a queue and never receives the attended
+approval private key. Its config, controller key, public approval key and
+attempt ledger must live in an owner-only directory outside every managed Git
+worktree. It verifies a clean exact executor SHA before each cycle, passes no API
+key to the controller, reserves an external attempt record before launch, runs
+at most one operation per cycle, and has zero automatic retries. A failed launch
+therefore requires a new explicit release rather than being polled repeatedly.
+
+The checked-in example at `config/u2-user-runner.example.json` is paused and is
+not an activation packet. After a reviewed runtime commit and time-bounded U2
+activation exist, the user creates a private external config and can verify it:
+
+```bash
+chmod 600 "$HOME/Library/Application Support/treeXchange-u2/runner.json"
+python3 scripts/u2_user_runner.py validate \
+  --config "$HOME/Library/Application Support/treeXchange-u2/runner.json"
+```
+
+The following command writes, but deliberately does not start, a per-user
+LaunchAgent. The user runs the returned `launchctl bootstrap` command once. From
+then on macOS starts the local runner while the user is logged in:
+
+```bash
+python3 scripts/u2_user_runner.py install-launch-agent \
+  --config "$HOME/Library/Application Support/treeXchange-u2/runner.json"
+```
+
+Changing the external runner config to `paused`, expiring the U2 activation, or
+exhausting a signed queue stops model operations without relying on Codex. The
+first three pilots remain exact-digest attended releases. A later, separately
+reviewed milestone may introduce a signed program-stage mandate; that broader
+authority is not implemented or implied by this runner.
+
 ## OMC collaboration lane
 
 OMC is the trusted, human-readable collaboration runtime for planning,

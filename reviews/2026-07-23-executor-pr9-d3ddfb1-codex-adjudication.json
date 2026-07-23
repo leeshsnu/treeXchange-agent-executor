@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "pull_request": 9,
+  "reviewed_head": "d3ddfb1e7229c8a471099b7abf237f96966a3746",
+  "reviewed_diff_sha256": "8ca899f6f49bcef2125f07e096df9a21d4b6a5a743e87ba8b5e07a3d1afcfa92",
+  "opus_4_8_verdict": "APPROVE",
+  "codex_disposition": "APPROVE_WITH_ACCEPTED_P3_RESIDUALS",
+  "pre_review_changes": [
+    {
+      "topic": "inspection subprocess inherited Claude OAuth context",
+      "decision": "VALID_LEAST_PRIVILEGE_HARDENING",
+      "action": "Split inspection and run environment allowlists so inspection receives neither the controller key nor Claude OAuth state."
+    },
+    {
+      "topic": "dependency-blocked work could consume the runner attempt",
+      "decision": "VALID_STATE_MACHINE_FIX",
+      "action": "Added controller-derived next_ready evidence and require it before the runner records an attempt."
+    }
+  ],
+  "opus_findings": [
+    {
+      "reported_severity": "P3",
+      "topic": "same-user mutation after the exact-SHA check",
+      "decision": "ACCEPTED_RESIDUAL_RISK",
+      "reason": "The stated boundary does not claim containment of an arbitrary same-user malicious process, which can already alter the owner-only runner state or invoke the local CLI directly."
+    },
+    {
+      "reported_severity": "P3",
+      "topic": "a new signed digest at the same queue path is a fresh attempt",
+      "decision": "EXPECTED_AUTHORITY_TRANSITION",
+      "reason": "A changed digest requires a separately valid signed release, while the controller still enforces release signature, activation, exact Base and Head, nonce, budget and the external one-use claim."
+    },
+    {
+      "reported_severity": "P3",
+      "topic": "worker credential stripping was outside the changed diff",
+      "decision": "CLOSED_BY_EXISTING_MACHINE_EVIDENCE",
+      "reason": "The unchanged bridge implementation and the passing child-environment tests prove that controller, GitHub, API-key, proxy and alternate-provider credentials are removed before Claude starts."
+    }
+  ],
+  "blocking_findings": [],
+  "quality_gate_tests_passed": 185,
+  "review_artifacts_excluded_from_model_diff": true,
+  "activation_changed": false,
+  "pause_released": false,
+  "ready_transition_requested": false,
+  "merge_requested": false
+}

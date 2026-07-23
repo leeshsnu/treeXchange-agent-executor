@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "status": "paused",
+  "poll_seconds": 30,
+  "automatic_retries": 0,
+  "maximum_operations_per_cycle": 1,
+  "state_directory": "/Users/YOU/Library/Application Support/treeXchange-u2",
+  "executor_root": "/absolute/path/to/clean/treeXchange-agent-executor-runtime",
+  "trusted_executor_sha": "0000000000000000000000000000000000000000",
+  "executor_config": "config/u2-local-worker.json",
+  "controller_key_path": "/Users/YOU/Library/Application Support/treeXchange-u2/keys/controller.key",
+  "approval_public_key_path": "/Users/YOU/Library/Application Support/treeXchange-u2/keys/approval-public.pem",
+  "repositories": [
+    {
+      "repository": "leeshsnu/treeXchange-season2",
+      "worktree": "/absolute/path/to/treeXchange-season2-worktree",
+      "queue_directory": ".agent-state/u2-queues",
+      "git_excludes_file": null
+    }
+  ]
+}
