@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -333,6 +335,46 @@ class U2UserRunnerTests(unittest.TestCase):
             self.assertEqual(payload["Umask"], 0o077)
             self.assertEqual(payload["StandardOutPath"], str(fixture.state / "runner.stdout.log"))
             self.assertEqual(payload["StandardErrorPath"], str(fixture.state / "runner.stderr.log"))
+
+    def test_standing_review_configuration_is_exact_atomic_and_not_a_model_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            config_path = fixture.root / "runner.json"
+            value = fixture.config()
+            config_path.write_text(json.dumps(value), encoding="utf-8")
+            os.chmod(config_path, 0o600)
+            policy = fixture.root / "standing-policy.json"
+            policy.write_text("{}\n", encoding="utf-8")
+            os.chmod(policy, 0o600)
+            ledger = fixture.root / "standing-ledger"
+            ledger.mkdir(mode=0o700)
+            reviews = fixture.root / "review-worktrees"
+            reviews.mkdir()
+            excludes = fixture.state / "git-excludes"
+            args = argparse.Namespace(
+                config=config_path,
+                expected_current_sha=fixture.sha,
+                trusted_executor_sha=fixture.sha,
+                standing_policy=policy,
+                standing_release_ledger=ledger,
+                lane_id="season2-review-snapshots",
+                repository="leeshsnu/treeXchange-season2",
+                worktree_parent=reviews,
+                branch_prefix="codex/review-snapshot/",
+                git_excludes_file=excludes,
+            )
+
+            runner.configure_standing_review(args)
+
+            configured = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(configured["trusted_executor_sha"], fixture.sha)
+            self.assertEqual(configured["standing_policy_path"], str(policy.resolve()))
+            self.assertEqual(configured["repositories"][-1]["lane_id"], "season2-review-snapshots")
+            self.assertEqual(excludes.read_text(encoding="utf-8"), ".agent-state/\n")
+            self.assertEqual(stat.S_IMODE(excludes.stat().st_mode), 0o600)
+
+            with self.assertRaisesRegex(runner.RunnerError, "already configured"):
+                runner.configure_standing_review(args)
 
     def test_retry_and_cycle_caps_are_fixed(self):
         with tempfile.TemporaryDirectory() as directory:

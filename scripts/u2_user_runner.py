@@ -812,6 +812,98 @@ def launch_agent_payload(
     }
 
 
+def ensure_owner_only_git_excludes(path: Path, state_directory: Path) -> None:
+    resolved = path.expanduser().resolve()
+    state = state_directory.resolve()
+    try:
+        resolved.relative_to(state)
+    except ValueError:
+        fail("configured Git excludes file must remain inside runner state", INVALID)
+    parent = resolved.parent
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    metadata = parent.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) & 0o077
+    ):
+        fail("Git excludes parent must be an owner-only real directory")
+    if resolved.exists():
+        if private_file_bytes(resolved, "git excludes file") != b".agent-state/\n":
+            fail("git excludes file may ignore only .agent-state/")
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(resolved, flags, 0o600)
+        try:
+            payload = b".agent-state/\n"
+            written = 0
+            while written < len(payload):
+                count = os.write(descriptor, payload[written:])
+                if count == 0:
+                    fail("git excludes file write made no progress")
+                written += count
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        fail(f"git excludes file could not be created: {error}")
+
+
+def configure_standing_review(args: argparse.Namespace) -> None:
+    config_path = args.config.expanduser().resolve()
+    config = load_config(config_path)
+    if config["status"] != "active":
+        fail("standing review can be installed only into an active user runner")
+    if config["trusted_executor_sha"] != args.expected_current_sha:
+        fail("runner config changed after the approved installation plan")
+    running_sha = exact_executor_sha(config)
+    if running_sha != args.trusted_executor_sha:
+        fail("new trusted executor SHA is not the exact installed executor Head")
+    if config.get("standing_policy_path") is not None:
+        fail("standing review is already configured; replacement requires a new command")
+    if any(entry.get("lane_id") == args.lane_id for entry in config["repositories"]):
+        fail("standing review discovery lane is already configured")
+
+    state = Path(config["state_directory"])
+    excludes = args.git_excludes_file.expanduser().resolve()
+    ensure_owner_only_git_excludes(excludes, state)
+    policy = args.standing_policy.expanduser().resolve()
+    ledger = args.standing_release_ledger.expanduser().resolve()
+    updated = {
+        **config,
+        "trusted_executor_sha": args.trusted_executor_sha,
+        "standing_policy_path": str(policy),
+        "standing_release_ledger": str(ledger),
+        "repositories": [
+            *config["repositories"],
+            {
+                "lane_id": args.lane_id,
+                "repository": args.repository,
+                "worktree_parent": str(args.worktree_parent.expanduser().resolve()),
+                "branch_prefix": args.branch_prefix,
+                "queue_directory": ".agent-state/u2-queues",
+                "git_excludes_file": str(excludes),
+            },
+        ],
+    }
+    validate_config(updated)
+    save_private_json(config_path, updated)
+    print_event(
+        {
+            "status": "STANDING_REVIEW_CONFIGURED_NOT_RESTARTED",
+            "trusted_executor_sha": updated["trusted_executor_sha"],
+            "policy": updated["standing_policy_path"],
+            "lane_id": args.lane_id,
+            "worktree_parent": str(args.worktree_parent.expanduser().resolve()),
+            "automatic_retries": 0,
+        }
+    )
+
+
 def install_launch_agent(args: argparse.Namespace) -> None:
     if not LAUNCH_AGENT_LABEL_RE.fullmatch(args.label):
         fail("LaunchAgent label is invalid", INVALID)
@@ -854,6 +946,22 @@ def parser() -> argparse.ArgumentParser:
     install.add_argument("--label", default="com.treexchange.u2-user-runner")
     install.add_argument("--replace", action="store_true")
     install.set_defaults(handler=install_launch_agent)
+    configure = subparsers.add_parser("configure-standing-review")
+    configure.add_argument("--config", type=Path, required=True)
+    configure.add_argument("--expected-current-sha", required=True)
+    configure.add_argument("--trusted-executor-sha", required=True)
+    configure.add_argument("--standing-policy", type=Path, required=True)
+    configure.add_argument("--standing-release-ledger", type=Path, required=True)
+    configure.add_argument("--lane-id", default="season2-review-snapshots")
+    configure.add_argument(
+        "--repository", default="leeshsnu/treeXchange-season2", choices=sorted(ALLOWED_REPOSITORIES)
+    )
+    configure.add_argument("--worktree-parent", type=Path, required=True)
+    configure.add_argument(
+        "--branch-prefix", default="codex/review-snapshot/", choices=sorted(ALLOWED_DISCOVERY_BRANCH_PREFIXES)
+    )
+    configure.add_argument("--git-excludes-file", type=Path, required=True)
+    configure.set_defaults(handler=configure_standing_review)
     return value
 
 

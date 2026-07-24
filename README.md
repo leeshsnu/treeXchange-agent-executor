@@ -312,6 +312,10 @@ example, so this capability is not active by installation alone.
 `u2_controller.py inspect-standing-policy-draft` validates the unsigned policy
 and prints the one canonical digest the user would approve; operators do not
 calculate or transcribe that digest by hand.
+After signing, `u2_user_runner.py configure-standing-review` atomically binds
+the prior runner SHA, newly installed exact SHA, signed policy, owner-only
+release ledger and fixed review-snapshot discovery lane. It does not restart
+the LaunchAgent or invoke a model.
 
 For dirty working-tree reviews, a discovery lane may point at one
 owner-controlled parent directory and the fixed
