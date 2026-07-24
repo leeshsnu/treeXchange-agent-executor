@@ -321,6 +321,19 @@ class U2UserRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.RunnerError, "label is invalid"):
             runner.install_launch_agent(args)
 
+    def test_launch_agent_uses_owner_only_umask_for_runtime_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            payload = runner.launch_agent_payload(
+                fixture.config(),
+                fixture.state,
+                "com.treexchange.u2-user-runner",
+                fixture.root / "runner.json",
+            )
+            self.assertEqual(payload["Umask"], 0o077)
+            self.assertEqual(payload["StandardOutPath"], str(fixture.state / "runner.stdout.log"))
+            self.assertEqual(payload["StandardErrorPath"], str(fixture.state / "runner.stderr.log"))
+
     def test_retry_and_cycle_caps_are_fixed(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = UserRunnerFixture(directory)

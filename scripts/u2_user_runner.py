@@ -790,6 +790,28 @@ def validate(args: argparse.Namespace) -> None:
     )
 
 
+def launch_agent_payload(
+    config: dict[str, Any], state: Path, label: str, config_path: Path
+) -> dict[str, Any]:
+    return {
+        "Label": label,
+        "ProgramArguments": [
+            sys.executable,
+            str((ROOT / "scripts/u2_user_runner.py").resolve()),
+            "serve",
+            "--config",
+            str(config_path.resolve()),
+        ],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": max(30, config["poll_seconds"]),
+        "StandardOutPath": str(state / "runner.stdout.log"),
+        "StandardErrorPath": str(state / "runner.stderr.log"),
+        "ProcessType": "Background",
+        "Umask": 0o077,
+    }
+
+
 def install_launch_agent(args: argparse.Namespace) -> None:
     if not LAUNCH_AGENT_LABEL_RE.fullmatch(args.label):
         fail("LaunchAgent label is invalid", INVALID)
@@ -802,22 +824,7 @@ def install_launch_agent(args: argparse.Namespace) -> None:
     plist_path = agents / f"{args.label}.plist"
     if plist_path.exists() and not args.replace:
         fail("LaunchAgent already exists; pass --replace to update it")
-    payload = {
-        "Label": args.label,
-        "ProgramArguments": [
-            sys.executable,
-            str((ROOT / "scripts/u2_user_runner.py").resolve()),
-            "serve",
-            "--config",
-            str(args.config.resolve()),
-        ],
-        "RunAtLoad": True,
-        "KeepAlive": True,
-        "ThrottleInterval": max(30, config["poll_seconds"]),
-        "StandardOutPath": str(state / "runner.stdout.log"),
-        "StandardErrorPath": str(state / "runner.stderr.log"),
-        "ProcessType": "Background",
-    }
+    payload = launch_agent_payload(config, state, args.label, args.config)
     temporary = plist_path.with_suffix(".plist.tmp")
     with temporary.open("wb") as output:
         plistlib.dump(payload, output, sort_keys=True)
