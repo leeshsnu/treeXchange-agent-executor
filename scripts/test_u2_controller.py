@@ -163,6 +163,51 @@ def paused_queue(repository: ReviewRepository) -> dict:
     return value
 
 
+def paused_user_review_queue(repository: ReviewRepository) -> dict:
+    value = paused_queue(repository)
+    value["origin"] = {
+        "kind": "user_directive",
+        "directive_id": "directive-controller-review-01",
+        "requested_assignee": "Claude",
+        "intent": "review",
+        "instruction_digest": hashlib.sha256(b"review exact code").hexdigest(),
+        "recorded_at": "2026-07-24T00:00:00Z",
+    }
+    return value
+
+
+def signed_standing_policy(repository: ReviewRepository, *, daily: int = 3) -> dict:
+    now = dt.datetime.now(dt.timezone.utc)
+    value = {
+        "schema_version": 1,
+        "policy_id": "u2-user-review-policy-01",
+        "status": "active",
+        "approval_key_id": "u2-attended-approval-v1",
+        "approved_by": "user",
+        "approved_at": (now - dt.timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+        "expires_at": (now + dt.timedelta(days=30)).isoformat().replace("+00:00", "Z"),
+        "repository": "leeshsnu/treeXchange-season2",
+        "allowed_origins": ["user_directive"],
+        "allowed_intents": ["advice", "design_review", "review"],
+        "allowed_roles": ["repository_reviewer"],
+        "allowed_profiles": ["design", "standard"],
+        "allowed_read_roots": ["services/model/**"],
+        "maximum_calls_per_task": 1,
+        "maximum_calls_per_utc_day": daily,
+        "maximum_turns": 4,
+        "automatic_retries": 0,
+        "policy_digest": "0" * 64,
+        "signature": "A" * 86 + "==",
+    }
+    value["policy_digest"] = controller.standing_policy_digest(value)
+    value["signature"] = base64.b64encode(
+        controller.ed25519_signature(
+            controller.standing_policy_payload(value), repository.approval_private
+        )
+    ).decode("ascii")
+    return value
+
+
 def active_config(
     repository: ReviewRepository, *, maker: bool = False
 ) -> dict:
@@ -213,6 +258,75 @@ def maker_queue(repository: ReviewRepository, state: str = "ready") -> dict:
 
 
 class U2ControllerTests(unittest.TestCase):
+    def test_signed_standing_policy_releases_only_one_explicit_read_only_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo_path = root / "repo"
+            repo_path.mkdir()
+            repository = ReviewRepository(str(repo_path))
+            queue = paused_user_review_queue(repository)
+            path = repository.queue_path(queue)
+            policy = signed_standing_policy(repository)
+            external = root / "external"
+            external.mkdir(mode=0o700)
+            policy_path = external / "signed-policy.json"
+            policy_path.write_text(json.dumps(policy), encoding="utf-8")
+            os.chmod(policy_path, 0o600)
+            ledger = external / "standing-ledger"
+            ledger.mkdir(mode=0o700)
+            config = active_config(repository)
+            environment = {
+                config["controller"]["key_environment"]: KEY,
+                config["approver"]["public_key_path_environment"]: str(
+                    repository.approval_public
+                ),
+                "U2_EXECUTOR_TRUSTED_SHA": git(controller.ROOT, "rev-parse", "HEAD"),
+            }
+            with tempfile.TemporaryDirectory() as config_directory:
+                config_path = Path(config_directory) / "active.json"
+                config_path.write_text(json.dumps(config), encoding="utf-8")
+                args = argparse.Namespace(
+                    repo=repository.root,
+                    queue=path,
+                    config=config_path,
+                    policy=policy_path,
+                    ledger=ledger,
+                )
+                with mock.patch.object(controller.worker, "CONFIG_PATH", config_path):
+                    with mock.patch.dict(controller.os.environ, environment, clear=False):
+                        with mock.patch("builtins.print"):
+                            controller.release_under_standing_policy(args)
+            released = controller.worker.load_json(path, "queue")
+            self.assertEqual(released["status"], "released")
+            self.assertEqual(released["release"]["approval_key_id"], "u2-standing-policy-v1")
+            controller.verify_release_authorization(
+                released, repository.approval_public.read_bytes(), KEY
+            )
+            self.assertEqual(len(list(ledger.glob("*.json"))), 1)
+
+    def test_standing_policy_rejects_maker_scope_and_enforces_daily_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo_path = root / "repo"
+            repo_path.mkdir()
+            repository = ReviewRepository(str(repo_path))
+            queue = paused_user_review_queue(repository)
+            policy = signed_standing_policy(repository, daily=1)
+            queue["items"][0]["role"] = "scoped_maker"
+            queue["origin"]["intent"] = "build"
+            with self.assertRaisesRegex(controller.ControllerError, "intent"):
+                controller.policy_allows_queue(policy, queue)
+
+            queue = paused_user_review_queue(repository)
+            ledger = root / "standing-ledger"
+            ledger.mkdir(mode=0o700)
+            now = dt.datetime.now(dt.timezone.utc)
+            controller.reserve_standing_release(repository.root, ledger, policy, queue, now)
+            changed = copy.deepcopy(queue)
+            changed["queue_id"] = "u2-controller-test-02"
+            with self.assertRaisesRegex(controller.ControllerError, "daily release cap"):
+                controller.reserve_standing_release(repository.root, ledger, policy, changed, now)
+
     def test_paused_queue_is_inspectable_but_contains_no_execution_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = ReviewRepository(directory)

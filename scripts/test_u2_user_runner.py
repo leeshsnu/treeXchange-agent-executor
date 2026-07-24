@@ -97,6 +97,145 @@ def completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProc
 
 
 class U2UserRunnerTests(unittest.TestCase):
+    def test_review_snapshot_lane_allows_same_repository_without_manual_config_per_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            parent = fixture.root / "review-worktrees"
+            parent.mkdir()
+            value = fixture.config()
+            value["repositories"].append(
+                {
+                    "lane_id": "season2-review-snapshots",
+                    "repository": "leeshsnu/treeXchange-season2",
+                    "worktree_parent": str(parent),
+                    "branch_prefix": "codex/review-snapshot/",
+                    "queue_directory": ".agent-state/u2-queues",
+                    "git_excludes_file": None,
+                }
+            )
+            runner.validate_config(value)
+
+            duplicate = json.loads(json.dumps(value))
+            duplicate["repositories"].append(dict(duplicate["repositories"][-1]))
+            with self.assertRaisesRegex(runner.RunnerError, "lane is duplicated"):
+                runner.validate_config(duplicate)
+
+    def test_load_config_accepts_external_review_snapshot_lane(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            parent = fixture.root / "review-worktrees"
+            parent.mkdir()
+            value = fixture.config(status="paused")
+            value["repositories"].append(
+                {
+                    "lane_id": "season2-review-snapshots",
+                    "repository": "leeshsnu/treeXchange-season2",
+                    "worktree_parent": str(parent),
+                    "branch_prefix": "codex/review-snapshot/",
+                    "queue_directory": ".agent-state/u2-queues",
+                    "git_excludes_file": None,
+                }
+            )
+            config_path = fixture.root / "runner.json"
+            config_path.write_text(json.dumps(value), encoding="utf-8")
+            os.chmod(config_path, 0o600)
+
+            loaded = runner.load_config(config_path)
+
+            self.assertEqual(loaded["repositories"][-1]["lane_id"], "season2-review-snapshots")
+
+    def test_discovery_lane_finds_only_cleanly_named_review_worktrees(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "reviews"
+            parent.mkdir()
+            review = parent / "review-one"
+            review.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=review, check=True, capture_output=True)
+            subprocess.run(["git", "switch", "-c", "codex/review-snapshot/one"], cwd=review, check=True, capture_output=True)
+            queue_dir = review / ".agent-state/u2-queues"
+            queue_dir.mkdir(parents=True)
+            (queue_dir / "task.json").write_text("{}\n", encoding="utf-8")
+            ignored = parent / "maker"
+            ignored.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=ignored, check=True, capture_output=True)
+            entry = {
+                "lane_id": "season2-review-snapshots",
+                "repository": "leeshsnu/treeXchange-season2",
+                "worktree_parent": str(parent),
+                "branch_prefix": "codex/review-snapshot/",
+                "queue_directory": ".agent-state/u2-queues",
+                "git_excludes_file": None,
+            }
+            candidates = runner.queue_candidates(
+                {"repositories": [entry]}, command=runner.run_command
+            )
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0][0]["worktree"], str(review.resolve()))
+            self.assertEqual(candidates[0][1], queue_dir.resolve() / "task.json")
+
+    def test_standing_policy_releases_then_runs_one_user_directed_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            policy = fixture.root / "standing-policy.json"
+            policy.write_text("{}\n", encoding="utf-8")
+            os.chmod(policy, 0o600)
+            standing_ledger = fixture.root / "standing-ledger"
+            standing_ledger.mkdir(mode=0o700)
+            config = fixture.config()
+            config["standing_policy_path"] = str(policy)
+            config["standing_release_ledger"] = str(standing_ledger)
+            draft = {
+                "status": "draft_paused",
+                "queue_id": "u2-user-review-01",
+                "origin": {
+                    "requested_assignee": "Claude",
+                    "intent": "review",
+                },
+                "next_ready": True,
+                "next_work_item_id": "OPS-USER-01",
+                "next_role": "repository_reviewer",
+                "operations_reserved": 0,
+                "maximum_operations": 0,
+                "approval_digest": "d" * 64,
+                "external_release_claimed": False,
+            }
+            released = {
+                **draft,
+                "status": "released",
+                "authorization_type": "standing_policy",
+                "maximum_operations": 1,
+            }
+            inspections = iter([draft, released])
+            calls: list[list[str]] = []
+
+            def command(args, **_kwargs):
+                calls.append(list(args))
+                if "inspect" in args:
+                    return completed(json.dumps(next(inspections)))
+                if "release-under-standing-policy" in args:
+                    return completed('{"status":"RELEASED_UNDER_STANDING_POLICY"}')
+                return completed('{"status":"WORK_COMPLETED"}')
+
+            with mock.patch.object(runner, "ROOT", fixture.executor):
+                result = runner.run_cycle(config, command=command)
+            self.assertTrue(result["attempted"])
+            self.assertEqual(result["outcome"], "completed")
+            self.assertEqual(
+                [
+                    "inspect" if "inspect" in args else
+                    "release" if "release-under-standing-policy" in args else
+                    "run"
+                    for args in calls
+                ],
+                ["inspect", "release", "inspect", "run"],
+            )
+            attempts = json.loads((fixture.state / "attempts.json").read_text())["attempts"]
+            self.assertEqual(
+                sorted(entry["status"] for entry in attempts.values()),
+                ["completed", "standing_release_completed"],
+            )
+
     def test_active_config_rejects_a_swapped_approval_public_key(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = UserRunnerFixture(directory)

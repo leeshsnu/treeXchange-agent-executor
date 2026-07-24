@@ -291,6 +291,37 @@ stage-sized mandate: it can contain one to seven exact work items and expires in
 at most seven days. The installed worker itself does not need weekly code
 reactivation.
 
+User-directed work has a separate fail-closed intake. `scripts/u2_task_intake.py`
+turns one bounded manifest into a paused queue and binds the task origin,
+requested assignee, intent and original-instruction digest to the immutable queue
+digest. It verifies the exact checked-out branch and Head; it does not release a
+queue or invoke Claude. The manifest contract is
+`schemas/u2-task-manifest.schema.json`.
+
+An optional one-time signed standing policy can release recurring read-only
+Reviewer tasks without asking the user to approve every queue digest. It can
+cover only explicit user directives, one Reviewer call per task, configured
+read roots, selected profiles, a numeric UTC daily cap and a fixed expiry. It
+cannot authorize Maker work, retries, source or Git writes, merge, deployment or
+external actions. The user-owned runner records the release attempt before the
+controller call, and a controller-signed exact queue release plus an external
+daily reservation prevents policy or queue substitution. Both
+`standing_policy_path` and `standing_release_ledger` must point to owner-only
+state outside all managed worktrees. They remain `null` in the checked-in
+example, so this capability is not active by installation alone.
+
+For dirty working-tree reviews, a discovery lane may point at one
+owner-controlled parent directory and the fixed
+`codex/review-snapshot/` branch prefix. The runner discovers new immediate
+child worktrees there, but the controller still verifies each repository,
+branch, exact Head, clean state, queue path and signed scope before release or
+execution. Other branch families, symlinks, nested roots and group/other
+writable directories are skipped or rejected. This avoids editing runner
+configuration for every disposable review snapshot.
+
+The exact scenario matrix, including what happens when the user assigns Claude
+implementation instead of review, is in `docs/U2_USER_DIRECTED_TASKS.md`.
+
 Repository context is also bounded independently of write scope. Claude cannot
 read `.github`, `config`, `ops`, Git-private state, local agent state, Claude
 settings or environment files. A signed task may read `docs/governance` because

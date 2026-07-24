@@ -7,6 +7,7 @@ import argparse
 import base64
 import contextlib
 import datetime as dt
+import fcntl
 import hashlib
 import hmac
 import io
@@ -41,6 +42,14 @@ QUEUE_FIELDS = {
     "items",
     "events",
 }
+ORIGIN_FIELDS = {
+    "kind",
+    "directive_id",
+    "requested_assignee",
+    "intent",
+    "instruction_digest",
+    "recorded_at",
+}
 RELEASE_FIELDS = {
     "release_id",
     "approval_key_id",
@@ -51,6 +60,28 @@ RELEASE_FIELDS = {
     "maximum_operations",
     "queue_digest",
     "release_signature",
+}
+STANDING_RELEASE_FIELDS = RELEASE_FIELDS | {"standing_policy", "controller_signature"}
+STANDING_POLICY_FIELDS = {
+    "schema_version",
+    "policy_id",
+    "status",
+    "approval_key_id",
+    "approved_by",
+    "approved_at",
+    "expires_at",
+    "repository",
+    "allowed_origins",
+    "allowed_intents",
+    "allowed_roles",
+    "allowed_profiles",
+    "allowed_read_roots",
+    "maximum_calls_per_task",
+    "maximum_calls_per_utc_day",
+    "maximum_turns",
+    "automatic_retries",
+    "policy_digest",
+    "signature",
 }
 ED25519_SIGNATURE_RE = re.compile(r"^[A-Za-z0-9+/]{86}==$")
 ITEM_FIELDS = {
@@ -126,6 +157,104 @@ def parse_utc(value: Any, label: str) -> dt.datetime:
         fail(str(error), error.code)
 
 
+def standing_policy_payload(policy: dict[str, Any]) -> bytes:
+    value = {
+        key: policy[key]
+        for key in sorted(STANDING_POLICY_FIELDS - {"policy_digest", "signature"})
+    }
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def standing_policy_digest(policy: dict[str, Any]) -> str:
+    return hashlib.sha256(standing_policy_payload(policy)).hexdigest()
+
+
+def validate_standing_policy(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != STANDING_POLICY_FIELDS:
+        fail("U2 standing-policy contract drifted", INVALID)
+    if value.get("schema_version") != 1 or value.get("status") != "active":
+        fail("U2 standing policy must be an active version-one policy", INVALID)
+    if not QUEUE_ID_RE.fullmatch(value.get("policy_id", "")):
+        fail("U2 standing policy id is invalid", INVALID)
+    if value.get("approval_key_id") != "u2-attended-approval-v1":
+        fail("U2 standing policy approval key is invalid", INVALID)
+    if not isinstance(value.get("approved_by"), str) or not value["approved_by"].strip():
+        fail("U2 standing policy requires an approval identity", INVALID)
+    approved = parse_utc(value.get("approved_at"), "standing_policy.approved_at")
+    expires = parse_utc(value.get("expires_at"), "standing_policy.expires_at")
+    if not dt.timedelta(0) < expires - approved <= dt.timedelta(days=366):
+        fail("U2 standing policy window must be positive and at most 366 days", INVALID)
+    if value.get("repository") not in bridge.ALLOWED_REPOSITORIES:
+        fail("U2 standing policy repository is outside the fixed allowlist", INVALID)
+    if value.get("allowed_origins") != ["user_directive"]:
+        fail("U2 standing policy may cover only explicit user directives", INVALID)
+    intents = value.get("allowed_intents")
+    if (
+        not isinstance(intents, list)
+        or not intents
+        or intents != sorted(set(intents))
+        or any(intent not in {"review", "design_review", "advice"} for intent in intents)
+    ):
+        fail("U2 standing policy intents are invalid", INVALID)
+    if value.get("allowed_roles") != ["repository_reviewer"]:
+        fail("U2 standing policy may authorize only the read-only Reviewer role", INVALID)
+    profiles = value.get("allowed_profiles")
+    if (
+        not isinstance(profiles, list)
+        or not profiles
+        or profiles != sorted(set(profiles))
+        or any(profile not in bridge.MODEL_BY_TASK_PROFILE for profile in profiles)
+    ):
+        fail("U2 standing policy profiles are invalid", INVALID)
+    roots = value.get("allowed_read_roots")
+    if not isinstance(roots, list) or not roots or roots != sorted(set(roots)) or len(roots) > 24:
+        fail("U2 standing policy read roots are invalid", INVALID)
+    for root in roots:
+        try:
+            worker.normalize_scope_path(root, "standing policy read root")
+        except worker.WorkerError as error:
+            fail(str(error), error.code)
+    if value.get("maximum_calls_per_task") != 1:
+        fail("U2 standing policy must remain one call per task", INVALID)
+    daily = value.get("maximum_calls_per_utc_day")
+    if not isinstance(daily, int) or isinstance(daily, bool) or not 1 <= daily <= 24:
+        fail("U2 standing policy daily call cap must be between one and 24", INVALID)
+    turns = value.get("maximum_turns")
+    if not isinstance(turns, int) or isinstance(turns, bool) or not 1 <= turns <= 8:
+        fail("U2 standing policy turn cap must be between one and eight", INVALID)
+    if value.get("automatic_retries") != 0:
+        fail("U2 standing policy automatic retries must remain zero", INVALID)
+    if value.get("policy_digest") != standing_policy_digest(value):
+        fail("U2 standing policy digest does not match its immutable fields", INVALID)
+    if not ED25519_SIGNATURE_RE.fullmatch(value.get("signature", "")):
+        fail("U2 standing policy signature is invalid", INVALID)
+
+
+def policy_allows_queue(policy: dict[str, Any], queue: dict[str, Any]) -> None:
+    validate_standing_policy(policy)
+    if queue.get("repository") != policy["repository"]:
+        fail("U2 queue repository is outside the standing policy")
+    origin = queue.get("origin")
+    if not isinstance(origin, dict):
+        fail("legacy U2 queues cannot use a standing policy")
+    if origin["kind"] not in policy["allowed_origins"] or origin["intent"] not in policy["allowed_intents"]:
+        fail("U2 task origin or intent is outside the standing policy")
+    if origin["requested_assignee"] != "Claude":
+        fail("U2 standing policy requires an explicit Claude assignment")
+    if len(queue["items"]) != 1:
+        fail("U2 standing policy authorizes exactly one work item per task")
+    item = queue["items"][0]
+    if item["role"] not in policy["allowed_roles"] or item["task_profile"] not in policy["allowed_profiles"]:
+        fail("U2 task role or profile is outside the standing policy")
+    if item["maximum_attempts"] != 1 or item["maximum_turns"] > policy["maximum_turns"]:
+        fail("U2 task attempt or turn cap exceeds the standing policy")
+    for scope in [*item["read_paths"], *item["allowed_paths"]]:
+        if not any(worker.scope_covers(root, scope) for root in policy["allowed_read_roots"]):
+            fail("U2 task path is outside the standing policy read roots")
+
+
 def queue_path(repo: Path, path: Path, *, must_exist: bool) -> Path:
     try:
         return worker.private_agent_path(repo, path, "U2 controller queue", must_exist=must_exist)
@@ -163,9 +292,34 @@ def valid_result(value: Any, state: str, role: str) -> bool:
     )
 
 
+def validate_origin(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != ORIGIN_FIELDS:
+        fail("U2 queue task-origin contract drifted", INVALID)
+    if value.get("kind") not in {
+        "user_directive",
+        "ratified_plan",
+        "review_followup",
+        "agent_discovered",
+        "gate_decision",
+    }:
+        fail("U2 queue task origin is invalid", INVALID)
+    if not QUEUE_ID_RE.fullmatch(value.get("directive_id", "")):
+        fail("U2 queue directive id is invalid", INVALID)
+    if value.get("requested_assignee") not in {"Claude", "Codex", "Both", "Controller"}:
+        fail("U2 queue requested assignee is invalid", INVALID)
+    if value.get("intent") not in {"plan", "review", "design_review", "build", "advice"}:
+        fail("U2 queue intent is invalid", INVALID)
+    if not worker.SIGNATURE_RE.fullmatch(value.get("instruction_digest", "")):
+        fail("U2 queue instruction digest is invalid", INVALID)
+    parse_utc(value.get("recorded_at"), "origin.recorded_at")
+
+
 def validate_queue(value: dict[str, Any]) -> None:
-    if set(value) != QUEUE_FIELDS or value.get("schema_version") != 1:
+    fields = set(value)
+    if fields not in {frozenset(QUEUE_FIELDS), frozenset(QUEUE_FIELDS | {"origin"})} or value.get("schema_version") != 1:
         fail("U2 controller queue contract drifted", INVALID)
+    if "origin" in value:
+        validate_origin(value["origin"])
     if not QUEUE_ID_RE.fullmatch(value.get("queue_id", "")):
         fail("U2 queue id is invalid", INVALID)
     if value.get("status") not in {"draft_paused", "released"}:
@@ -174,7 +328,10 @@ def validate_queue(value: dict[str, Any]) -> None:
         fail("U2 queue repository is outside the fixed allowlist", INVALID)
 
     release = value.get("release")
-    if not isinstance(release, dict) or set(release) != RELEASE_FIELDS:
+    if not isinstance(release, dict) or set(release) not in {
+        frozenset(RELEASE_FIELDS),
+        frozenset(STANDING_RELEASE_FIELDS),
+    }:
         fail("U2 queue release contract drifted", INVALID)
     if value["status"] == "draft_paused":
         expected = {
@@ -193,8 +350,10 @@ def validate_queue(value: dict[str, Any]) -> None:
     else:
         if not worker.CONTROL_EVIDENCE_RE.fullmatch(release.get("release_id", "")):
             fail("U2 release id is invalid", INVALID)
-        if release.get("approval_key_id") != "u2-attended-approval-v1":
-            fail("U2 attended approval key id is invalid", INVALID)
+        standing = set(release) == STANDING_RELEASE_FIELDS
+        expected_key = "u2-standing-policy-v1" if standing else "u2-attended-approval-v1"
+        if release.get("approval_key_id") != expected_key:
+            fail("U2 release approval key id is invalid", INVALID)
         if not isinstance(release.get("approved_by"), str) or not release["approved_by"].strip():
             fail("released U2 queue requires an approval identity", INVALID)
         approved = parse_utc(release.get("approved_at"), "release.approved_at")
@@ -220,6 +379,10 @@ def validate_queue(value: dict[str, Any]) -> None:
             fail("U2 queue approval digest is invalid", INVALID)
         if not ED25519_SIGNATURE_RE.fullmatch(release.get("release_signature", "")):
             fail("U2 queue release signature is invalid", INVALID)
+        if standing:
+            validate_standing_policy(release.get("standing_policy"))
+            if not worker.SIGNATURE_RE.fullmatch(release.get("controller_signature", "")):
+                fail("U2 standing release controller signature is invalid", INVALID)
 
     items = value.get("items")
     if not isinstance(items, list) or not 1 <= len(items) <= 50:
@@ -408,6 +571,8 @@ def approval_digest(queue: dict[str, Any]) -> str:
         "repository": queue["repository"],
         "items": [immutable_item(item) for item in queue["items"]],
     }
+    if "origin" in queue:
+        payload["origin"] = queue["origin"]
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
@@ -572,6 +737,58 @@ def verify_release_signature(queue: dict[str, Any], public_key: bytes) -> None:
     ed25519_verify(release_payload(queue), signature, public_key)
 
 
+def verify_standing_policy(policy: dict[str, Any], public_key: bytes) -> None:
+    validate_standing_policy(policy)
+    try:
+        signature = base64.b64decode(policy["signature"], validate=True)
+    except (ValueError, TypeError):
+        fail("U2 standing policy signature is malformed")
+    if len(signature) != 64:
+        fail("U2 standing policy signature is malformed")
+    ed25519_verify(standing_policy_payload(policy), signature, public_key)
+
+
+def standing_release_payload(queue: dict[str, Any]) -> bytes:
+    release = queue["release"]
+    value = {
+        "schema_version": queue["schema_version"],
+        "queue_id": queue["queue_id"],
+        "repository": queue["repository"],
+        "origin": queue.get("origin"),
+        "release_id": release["release_id"],
+        "approved_at": release["approved_at"],
+        "expires_at": release["expires_at"],
+        "queue_digest": release["queue_digest"],
+        "standing_policy_digest": release["standing_policy"]["policy_digest"],
+    }
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def verify_release_authorization(
+    queue: dict[str, Any], public_key: bytes, controller_key: str | None = None
+) -> None:
+    release = queue["release"]
+    if set(release) == RELEASE_FIELDS:
+        verify_release_signature(queue, public_key)
+        return
+    policy = release["standing_policy"]
+    verify_standing_policy(policy, public_key)
+    policy_allows_queue(policy, queue)
+    if release["queue_digest"] != approval_digest(queue):
+        fail("U2 queue changed after its standing-policy release")
+    if release["release_signature"] != policy["signature"]:
+        fail("U2 standing release does not carry the approved policy signature")
+    if controller_key is None:
+        fail("U2 standing release requires the controller signing key")
+    expected = hmac.new(
+        controller_key.encode("utf-8"), standing_release_payload(queue), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected, release["controller_signature"]):
+        fail("U2 standing release controller signature verification failed")
+
+
 def release_claim_path(
     repo: Path,
     queue: dict[str, Any],
@@ -624,6 +841,7 @@ def claim_release_once(
             {
                 "schema_version": 1,
                 "repository": queue["repository"],
+                "origin": queue.get("origin"),
                 "queue_id": queue["queue_id"],
                 "release_id": queue["release"]["release_id"],
                 "queue_digest": queue["release"]["queue_digest"],
@@ -826,7 +1044,7 @@ def run_next(args: argparse.Namespace) -> None:
         validate_queue(queue)
         if bridge.repository_identity(repo) != queue["repository"]:
             fail("U2 queue repository does not match the assigned worktree")
-        verify_release_signature(queue, approval_public_key)
+        verify_release_authorization(queue, approval_public_key, key)
         release_is_current(queue, current)
         item = select_next(queue)
         worker.require_role_activation(config, item["role"])
@@ -892,7 +1110,7 @@ def run_next(args: argparse.Namespace) -> None:
     with bridge.locked_ledger(resolved):
         queue = worker.load_json(resolved, "U2 controller queue")
         validate_queue(queue)
-        verify_release_signature(queue, approval_public_key)
+        verify_release_authorization(queue, approval_public_key, key)
         approved = parse_utc(queue["release"]["approved_at"], "release.approved_at")
         expires = parse_utc(queue["release"]["expires_at"], "release.expires_at")
         if not approved <= finished < expires:
@@ -940,6 +1158,223 @@ def run_next(args: argparse.Namespace) -> None:
     )
 
 
+def owner_only_json(path: Path, label: str) -> dict[str, Any]:
+    try:
+        metadata = path.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            fail(f"{label} must be an owner-only regular file")
+        value = worker.load_json(path, label)
+    except OSError:
+        fail(f"{label} is unavailable")
+    except worker.WorkerError as error:
+        fail(str(error), error.code)
+    return value
+
+
+def external_owner_directory(repo: Path, path: Path, label: str) -> Path:
+    resolved = path.expanduser().resolve()
+    try:
+        resolved.relative_to(repo.resolve())
+        fail(f"{label} must remain outside the managed repository")
+    except ValueError:
+        pass
+    try:
+        resolved.mkdir(parents=True, exist_ok=True, mode=0o700)
+        metadata = resolved.lstat()
+    except OSError:
+        fail(f"{label} is unavailable")
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) & 0o077
+    ):
+        fail(f"{label} must be an owner-only real directory")
+    return resolved
+
+
+def write_external_owner_json(repo: Path, path: Path, value: dict[str, Any], label: str) -> None:
+    parent = external_owner_directory(repo, path.expanduser().parent, f"{label} parent")
+    destination = parent / path.name
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    payload = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8") + b"\n"
+    try:
+        descriptor = os.open(destination, flags, 0o600)
+        written = 0
+        while written < len(payload):
+            written += os.write(descriptor, payload[written:])
+        os.fsync(descriptor)
+    except FileExistsError:
+        fail(f"{label} already exists")
+    except OSError:
+        fail(f"{label} could not be written")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def sign_standing_policy(args: argparse.Namespace) -> None:
+    worker.require_trusted_config_path(args.config)
+    config = worker.load_config(args.config)
+    worker.require_activation(config)
+    repo = args.repo.resolve()
+    repository = bridge.repository_identity(repo)
+    if repository not in bridge.ALLOWED_REPOSITORIES:
+        fail("standing policy repository is outside the fixed allowlist")
+    try:
+        source = worker.private_agent_path(
+            repo, args.policy, "U2 standing-policy draft", must_exist=True
+        )
+        unsigned = worker.load_json(source, "U2 standing-policy draft")
+    except worker.WorkerError as error:
+        fail(str(error), error.code)
+    unsigned_fields = STANDING_POLICY_FIELDS - {"policy_digest", "signature"}
+    if not isinstance(unsigned, dict) or set(unsigned) != unsigned_fields:
+        fail("U2 unsigned standing-policy contract drifted", INVALID)
+    if unsigned.get("repository") != repository:
+        fail("U2 standing-policy repository does not match the attended worktree", INVALID)
+    policy = {
+        **unsigned,
+        "policy_digest": "0" * 64,
+        "signature": "A" * 86 + "==",
+    }
+    policy["policy_digest"] = standing_policy_digest(policy)
+    if not hmac.compare_digest(policy["policy_digest"], args.expected_digest):
+        fail("user-approved standing-policy digest does not match the draft")
+    signature = ed25519_signature(standing_policy_payload(policy), args.approval_private_key)
+    policy["signature"] = base64.b64encode(signature).decode("ascii")
+    validate_standing_policy(policy)
+    public_key = worker.approval_public_key_bytes(config, os.environ)
+    verify_standing_policy(policy, public_key)
+    write_external_owner_json(repo, args.output, policy, "U2 signed standing policy")
+    print(
+        json.dumps(
+            {
+                "status": "SIGNED_STANDING_POLICY_NOT_INSTALLED",
+                "policy_id": policy["policy_id"],
+                "policy_digest": policy["policy_digest"],
+                "expires_at": policy["expires_at"],
+                "maximum_calls_per_utc_day": policy["maximum_calls_per_utc_day"],
+                "output": str(args.output.expanduser().resolve()),
+            },
+            separators=(",", ":"),
+        )
+    )
+
+
+def reserve_standing_release(
+    repo: Path, directory: Path, policy: dict[str, Any], queue: dict[str, Any], now: dt.datetime
+) -> None:
+    root = external_owner_directory(repo, directory, "U2 standing-release ledger")
+    day = now.date().isoformat()
+    prefix = f"{policy['policy_id']}-{day}-"
+    lock_path = root / ".standing-release.lock"
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        used = sum(1 for path in root.glob(f"{prefix}*.json") if path.is_file())
+        if used >= policy["maximum_calls_per_utc_day"]:
+            fail("U2 standing-policy daily release cap has been reached")
+        identity = hashlib.sha256(
+            f"{policy['policy_digest']}\0{approval_digest(queue)}".encode("utf-8")
+        ).hexdigest()
+        claim = root / f"{prefix}{identity}.json"
+        write_external_owner_json(
+            repo,
+            claim,
+            {
+                "schema_version": 1,
+                "policy_id": policy["policy_id"],
+                "policy_digest": policy["policy_digest"],
+                "queue_id": queue["queue_id"],
+                "queue_digest": approval_digest(queue),
+                "reserved_at": now.isoformat().replace("+00:00", "Z"),
+            },
+            "U2 standing-release reservation",
+        )
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def release_under_standing_policy(args: argparse.Namespace) -> None:
+    worker.require_trusted_config_path(args.config)
+    config = worker.load_config(args.config)
+    worker.require_activation(config)
+    repo = args.repo.resolve()
+    resolved = queue_path(repo, args.queue, must_exist=True)
+    policy_path = args.policy.expanduser().resolve()
+    try:
+        policy_path.relative_to(repo)
+        fail("U2 signed standing policy must remain outside the managed repository")
+    except ValueError:
+        pass
+    policy = owner_only_json(policy_path, "U2 signed standing policy")
+    public_key = worker.approval_public_key_bytes(config, os.environ)
+    verify_standing_policy(policy, public_key)
+    current = dt.datetime.now(dt.timezone.utc)
+    approved = parse_utc(policy["approved_at"], "standing_policy.approved_at")
+    policy_expiry = parse_utc(policy["expires_at"], "standing_policy.expires_at")
+    if not approved <= current < policy_expiry:
+        fail("U2 standing policy is outside its approved window")
+    key = signing_key(config, os.environ)
+    with bridge.locked_ledger(resolved):
+        queue = worker.load_json(resolved, "U2 controller queue")
+        validate_queue(queue)
+        if queue["status"] != "draft_paused":
+            fail("only a paused U2 queue can receive a standing-policy release")
+        if bridge.repository_identity(repo) != queue["repository"]:
+            fail("U2 queue repository does not match the standing-policy worktree")
+        policy_allows_queue(policy, queue)
+        reserve_standing_release(repo, args.ledger, policy, queue, current)
+        digest = approval_digest(queue)
+        expires = min(policy_expiry, current + dt.timedelta(hours=24))
+        release_id = f"standing-{policy['policy_id'][:52]}-{digest[:16]}"
+        queue["status"] = "released"
+        queue["release"] = {
+            "release_id": release_id,
+            "approval_key_id": "u2-standing-policy-v1",
+            "approved_by": policy["approved_by"],
+            "approved_at": current.isoformat().replace("+00:00", "Z"),
+            "expires_at": expires.isoformat().replace("+00:00", "Z"),
+            "allowed_roles": ["repository_reviewer"],
+            "maximum_operations": 1,
+            "queue_digest": digest,
+            "release_signature": policy["signature"],
+            "standing_policy": policy,
+            "controller_signature": "0" * 64,
+        }
+        queue["release"]["controller_signature"] = hmac.new(
+            key.encode("utf-8"), standing_release_payload(queue), hashlib.sha256
+        ).hexdigest()
+        validate_queue(queue)
+        verify_release_authorization(queue, public_key, key)
+        bridge.save_private_json(resolved, queue)
+    print(
+        json.dumps(
+            {
+                "status": "RELEASED_UNDER_STANDING_POLICY",
+                "policy_id": policy["policy_id"],
+                "queue_id": queue["queue_id"],
+                "approval_digest": digest,
+                "expires_at": queue["release"]["expires_at"],
+                "maximum_operations": 1,
+            },
+            separators=(",", ":"),
+        )
+    )
+
+
 def inspect_queue(args: argparse.Namespace) -> None:
     repo = args.repo.resolve()
     _, queue = load_queue(repo, args.queue)
@@ -965,6 +1400,14 @@ def inspect_queue(args: argparse.Namespace) -> None:
                 "status": queue["status"],
                 "queue_id": queue["queue_id"],
                 "repository": queue["repository"],
+                "origin": queue.get("origin"),
+                "authorization_type": (
+                    "standing_policy"
+                    if set(queue["release"]) == STANDING_RELEASE_FIELDS
+                    else "attended"
+                    if queue["status"] == "released"
+                    else None
+                ),
                 "counts": counts,
                 "next_ready": next_item is not None,
                 "next_work_item_id": (
@@ -1064,6 +1507,21 @@ def parser() -> argparse.ArgumentParser:
     release.add_argument("--expires-at", required=True)
     release.add_argument("--approval-private-key", type=Path, required=True)
     release.set_defaults(handler=release_queue)
+    sign_policy = subparsers.add_parser("sign-standing-policy")
+    sign_policy.add_argument("--repo", type=Path, required=True)
+    sign_policy.add_argument("--policy", type=Path, required=True)
+    sign_policy.add_argument("--config", type=Path, default=worker.CONFIG_PATH)
+    sign_policy.add_argument("--expected-digest", required=True)
+    sign_policy.add_argument("--approval-private-key", type=Path, required=True)
+    sign_policy.add_argument("--output", type=Path, required=True)
+    sign_policy.set_defaults(handler=sign_standing_policy)
+    standing = subparsers.add_parser("release-under-standing-policy")
+    standing.add_argument("--repo", type=Path, required=True)
+    standing.add_argument("--queue", type=Path, required=True)
+    standing.add_argument("--config", type=Path, default=worker.CONFIG_PATH)
+    standing.add_argument("--policy", type=Path, required=True)
+    standing.add_argument("--ledger", type=Path, required=True)
+    standing.set_defaults(handler=release_under_standing_policy)
     run = subparsers.add_parser("run-next")
     run.add_argument("--repo", type=Path, required=True)
     run.add_argument("--queue", type=Path, required=True)

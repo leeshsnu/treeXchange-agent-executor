@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""User-owned macOS runner for already released U2 Maker and Reviewer queues.
+"""User-owned macOS runner for bounded U2 Maker and Reviewer queues.
 
 This process is intentionally started by the user, outside Codex.  It never
-releases a queue, signs an approval, edits source, pushes, merges, or deploys.
-It consumes at most one already signed work item per polling cycle and records
-each item attempt before invoking the controller so a failed launch is never
-retried automatically.
+signs an approval, edits source, pushes, merges, or deploys.  It may ask the
+controller to release one user-directed read-only Reviewer queue under an
+already signed standing policy.  It consumes at most one signed work item per
+polling cycle and records each release and item attempt before invoking the
+controller so a failed launch is never retried automatically.
 """
 
 from __future__ import annotations
@@ -48,12 +49,26 @@ RUNNER_FIELDS = {
     "approval_public_key_sha256",
     "repositories",
 }
-REPOSITORY_FIELDS = {
+OPTIONAL_RUNNER_FIELDS = {
+    "standing_policy_path",
+    "standing_release_ledger",
+}
+LEGACY_REPOSITORY_FIELDS = {
     "repository",
     "worktree",
     "queue_directory",
     "git_excludes_file",
 }
+DISCOVERY_REPOSITORY_FIELDS = {
+    "lane_id",
+    "repository",
+    "worktree_parent",
+    "branch_prefix",
+    "queue_directory",
+    "git_excludes_file",
+}
+LANE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
+ALLOWED_DISCOVERY_BRANCH_PREFIXES = {"codex/review-snapshot/"}
 ALLOWED_REPOSITORIES = {
     "leeshsnu/treeXchange-agent-executor",
     "leeshsnu/treeXchange-season2",
@@ -151,7 +166,10 @@ def is_within(path: Path, parent: Path) -> bool:
 
 
 def validate_config(value: dict[str, Any]) -> dict[str, Any]:
-    if set(value) != RUNNER_FIELDS or value.get("schema_version") != 1:
+    if set(value) not in {
+        frozenset(RUNNER_FIELDS),
+        frozenset(RUNNER_FIELDS | OPTIONAL_RUNNER_FIELDS),
+    } or value.get("schema_version") != 1:
         fail("U2 user-runner config contract drifted", INVALID)
     if value.get("status") not in {"paused", "active"}:
         fail("U2 user-runner status must be paused or active", INVALID)
@@ -188,18 +206,36 @@ def validate_config(value: dict[str, Any]) -> dict[str, Any]:
     repositories = value.get("repositories")
     if not isinstance(repositories, list) or not repositories:
         fail("U2 user-runner requires at least one repository", INVALID)
-    seen: set[str] = set()
+    seen_lanes: set[str] = set()
     repository_roots: list[Path] = []
+    discovery_roots: list[Path] = []
     exclude_files: list[Path] = []
     for entry in repositories:
-        if not isinstance(entry, dict) or set(entry) != REPOSITORY_FIELDS:
+        if not isinstance(entry, dict) or set(entry) not in {
+            frozenset(LEGACY_REPOSITORY_FIELDS),
+            frozenset(DISCOVERY_REPOSITORY_FIELDS),
+        }:
             fail("U2 user-runner repository contract drifted", INVALID)
         repository = entry.get("repository")
-        if repository not in ALLOWED_REPOSITORIES or repository in seen:
-            fail("U2 user-runner repository is outside the allowlist or duplicated", INVALID)
-        seen.add(repository)
-        worktree = absolute_path(entry.get("worktree"), "repository.worktree")
-        repository_roots.append(worktree)
+        if repository not in ALLOWED_REPOSITORIES:
+            fail("U2 user-runner repository is outside the allowlist", INVALID)
+        if set(entry) == LEGACY_REPOSITORY_FIELDS:
+            lane_id = f"legacy-{repository.replace('/', '-').lower()}"
+            worktree = absolute_path(entry.get("worktree"), "repository.worktree")
+            repository_roots.append(worktree)
+        else:
+            lane_id = entry.get("lane_id")
+            if not LANE_ID_RE.fullmatch(lane_id or ""):
+                fail("U2 user-runner discovery lane id is invalid", INVALID)
+            parent = absolute_path(
+                entry.get("worktree_parent"), "repository.worktree_parent"
+            )
+            discovery_roots.append(parent)
+            if entry.get("branch_prefix") not in ALLOWED_DISCOVERY_BRANCH_PREFIXES:
+                fail("U2 user-runner discovery branch prefix is not approved", INVALID)
+        if lane_id in seen_lanes:
+            fail("U2 user-runner repository lane is duplicated", INVALID)
+        seen_lanes.add(lane_id)
         queue_directory = entry.get("queue_directory")
         if queue_directory != ".agent-state/u2-queues":
             fail("queue_directory must remain under .agent-state/u2-queues", INVALID)
@@ -209,15 +245,29 @@ def validate_config(value: dict[str, Any]) -> dict[str, Any]:
                 absolute_path(excludes, "repository.git_excludes_file")
             )
 
-    if is_within(state, executor) or any(is_within(state, root) for root in repository_roots):
+    managed_roots = [*repository_roots, *discovery_roots]
+    if is_within(state, executor) or any(is_within(state, root) for root in managed_roots):
         fail("state_directory must remain outside every managed Git worktree", INVALID)
-    protected_roots = [executor, *repository_roots]
+    protected_roots = [executor, *managed_roots]
     if any(is_within(controller_key, root) for root in protected_roots) or any(
         is_within(approval_public, root) for root in protected_roots
     ):
         fail("runner key files must remain outside every managed Git worktree", INVALID)
     if any(any(is_within(path, root) for root in protected_roots) for path in exclude_files):
         fail("git excludes files must remain outside every managed Git worktree", INVALID)
+    standing_policy_value = value.get("standing_policy_path")
+    standing_ledger_value = value.get("standing_release_ledger")
+    if (standing_policy_value is None) != (standing_ledger_value is None):
+        fail("standing policy path and release ledger must be configured together", INVALID)
+    standing_policy: Path | None = None
+    standing_ledger: Path | None = None
+    if standing_policy_value is not None:
+        standing_policy = absolute_path(standing_policy_value, "standing_policy_path")
+        standing_ledger = absolute_path(standing_ledger_value, "standing_release_ledger")
+        if any(is_within(standing_policy, root) for root in protected_roots) or any(
+            is_within(standing_ledger, root) for root in protected_roots
+        ):
+            fail("standing-policy state must remain outside every managed Git worktree", INVALID)
     if value["status"] == "active":
         if not executor.is_dir():
             fail("active U2 user-runner executor_root is unavailable")
@@ -235,15 +285,42 @@ def validate_config(value: dict[str, Any]) -> dict[str, Any]:
         for root in repository_roots:
             if not root.is_dir():
                 fail("active U2 user-runner repository worktree is unavailable")
+        for root in discovery_roots:
+            try:
+                metadata = root.lstat()
+            except OSError:
+                fail("active U2 user-runner worktree discovery root is unavailable")
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) & 0o022
+            ):
+                fail("active U2 worktree discovery root must be owner-controlled")
+        if standing_policy is not None and standing_ledger is not None:
+            private_file_bytes(standing_policy, "signed standing policy")
+            try:
+                metadata = standing_ledger.lstat()
+            except OSError:
+                fail("standing release ledger is unavailable")
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) & 0o077
+            ):
+                fail("standing release ledger must be an owner-only real directory")
     return value
 
 
 def load_config(path: Path) -> dict[str, Any]:
     value = validate_config(load_private_json(path, "U2 user-runner config"))
-    roots = [
-        Path(value["executor_root"]),
-        *(Path(entry["worktree"]) for entry in value["repositories"]),
-    ]
+    roots = [Path(value["executor_root"])]
+    for entry in value["repositories"]:
+        root_field = (
+            "worktree" if set(entry) == LEGACY_REPOSITORY_FIELDS else "worktree_parent"
+        )
+        roots.append(Path(entry[root_field]))
     if any(is_within(path, root) for root in roots):
         fail("U2 user-runner config must remain outside every managed Git worktree")
     return value
@@ -442,9 +519,73 @@ def attempt_key(
     return hashlib.sha256(payload).hexdigest()
 
 
-def queue_candidates(config: dict[str, Any]) -> list[tuple[dict[str, Any], Path]]:
+def discovered_repositories(
+    entry: dict[str, Any],
+    *,
+    command: Callable[..., subprocess.CompletedProcess[str]] = run_command,
+) -> list[dict[str, Any]]:
+    parent = Path(entry["worktree_parent"]).resolve()
+    values: list[dict[str, Any]] = []
+    try:
+        children = sorted(parent.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return values
+    for child in children[:64]:
+        try:
+            metadata = child.lstat()
+        except OSError:
+            continue
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            continue
+        root = command(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=child,
+            env=inspection_environment(entry),
+        )
+        branch = command(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+            cwd=child,
+            env=inspection_environment(entry),
+        )
+        if root.returncode != 0 or branch.returncode != 0:
+            continue
+        try:
+            if Path(root.stdout.strip()).resolve() != child.resolve():
+                continue
+        except OSError:
+            continue
+        if not branch.stdout.strip().startswith(entry["branch_prefix"]):
+            continue
+        values.append(
+            {
+                "repository": entry["repository"],
+                "worktree": str(child.resolve()),
+                "queue_directory": entry["queue_directory"],
+                "git_excludes_file": entry.get("git_excludes_file"),
+                "lane_id": entry["lane_id"],
+            }
+        )
+    return values
+
+
+def queue_candidates(
+    config: dict[str, Any],
+    *,
+    command: Callable[..., subprocess.CompletedProcess[str]] = run_command,
+) -> list[tuple[dict[str, Any], Path]]:
     values: list[tuple[dict[str, Any], Path]] = []
-    for repository in config["repositories"]:
+    repositories: list[dict[str, Any]] = []
+    for configured in config["repositories"]:
+        if set(configured) == DISCOVERY_REPOSITORY_FIELDS:
+            repositories.extend(discovered_repositories(configured, command=command))
+        else:
+            repositories.append(configured)
+    for repository in repositories:
         root = Path(repository["worktree"])
         directory = root / repository["queue_directory"]
         if directory.is_dir():
@@ -463,8 +604,64 @@ def run_cycle(
     require_exact_executor(config)
     state_directory = private_state_directory(config)
     ledger = load_attempts(state_directory)
-    for repository, queue in queue_candidates(config):
+    for repository, queue in queue_candidates(config, command=command):
         inspected = inspect_queue(config, repository, queue, command)
+        if (
+            isinstance(inspected, dict)
+            and inspected.get("status") == "draft_paused"
+            and config.get("standing_policy_path") is not None
+            and isinstance(inspected.get("approval_digest"), str)
+            and isinstance(inspected.get("origin"), dict)
+            and inspected["origin"].get("requested_assignee") == "Claude"
+        ):
+            release_key = attempt_key(
+                repository["repository"],
+                queue,
+                inspected["approval_digest"],
+                "STANDING-POLICY-RELEASE",
+            )
+            if release_key not in ledger["attempts"]:
+                ledger["attempts"][release_key] = {
+                    "at": utc_now(),
+                    "queue_id": inspected.get("queue_id"),
+                    "work_item_id": inspected.get("next_work_item_id"),
+                    "role": inspected.get("next_role"),
+                    "approval_digest": inspected["approval_digest"],
+                    "status": "standing_release_reserved_before_launch",
+                }
+                save_private_json(state_directory / "attempts.json", ledger)
+                executor = Path(config["executor_root"])
+                controller = executor / "scripts/u2_controller.py"
+                released = command(
+                    [
+                        sys.executable,
+                        str(controller),
+                        "release-under-standing-policy",
+                        "--repo",
+                        repository["worktree"],
+                        "--queue",
+                        str(queue),
+                        "--config",
+                        str(executor / config["executor_config"]),
+                        "--policy",
+                        config["standing_policy_path"],
+                        "--ledger",
+                        config["standing_release_ledger"],
+                    ],
+                    cwd=executor,
+                    env=runner_environment(config, repository),
+                )
+                ledger = load_attempts(state_directory)
+                ledger["attempts"][release_key]["finished_at"] = utc_now()
+                ledger["attempts"][release_key]["status"] = (
+                    "standing_release_completed"
+                    if released.returncode == 0
+                    else f"standing_release_exit_{released.returncode}"
+                )
+                save_private_json(state_directory / "attempts.json", ledger)
+                if released.returncode != 0:
+                    continue
+                inspected = inspect_queue(config, repository, queue, command)
         if not actionable_queue(inspected):
             continue
         digest = inspected.get("approval_digest")
