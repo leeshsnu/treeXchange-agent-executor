@@ -315,7 +315,22 @@ calculate or transcribe that digest by hand.
 After signing, `u2_user_runner.py configure-standing-review` atomically binds
 the prior runner SHA, newly installed exact SHA, signed policy, owner-only
 release ledger and fixed review-snapshot discovery lane. It does not restart
-the LaunchAgent or invoke a model.
+the LaunchAgent or invoke a model. The same command binds the fixed loopback
+Command Center event endpoint. Queue discovery, policy check, assignment,
+worker start and result metadata are HMAC-signed with a one-way event-only key
+derived from the controller key. The web process never receives the controller
+key itself. That derived identity is accepted only for `DIRECTIVE_PROGRESS`, so
+it cannot forge a work release, assignment, decision or completion in the main
+orchestration ledger. Failed projection retries metadata only and never retries
+a model call. Collision recovery queries the exact event id instead of relying
+on the dashboard's bounded recent-history page.
+
+`u2_user_runner.py record-codex-adjudication` binds Codex's later cross-check to
+the exact Claude result digest and reviewed Head. The runner emits `DONE` only
+after that separate adjudication says `ACCEPTED`; Claude's full private output
+is not copied into the dashboard event. This record is protected by the local
+owner-only runner boundary; it is not represented as a cryptographic remote
+Codex attestation.
 
 For dirty working-tree reviews, a discovery lane may point at one
 owner-controlled parent directory and the fixed

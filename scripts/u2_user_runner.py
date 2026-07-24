@@ -15,6 +15,7 @@ import argparse
 import datetime as dt
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import plistlib
@@ -25,6 +26,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -33,6 +38,7 @@ DENY = 77
 INVALID = 78
 ROOT = Path(__file__).parents[1]
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SAFE_EVENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 LAUNCH_AGENT_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{2,127}$")
 RUNNER_FIELDS = {
     "schema_version",
@@ -52,6 +58,7 @@ RUNNER_FIELDS = {
 OPTIONAL_RUNNER_FIELDS = {
     "standing_policy_path",
     "standing_release_ledger",
+    "command_center_event_url",
 }
 LEGACY_REPOSITORY_FIELDS = {
     "repository",
@@ -166,10 +173,12 @@ def is_within(path: Path, parent: Path) -> bool:
 
 
 def validate_config(value: dict[str, Any]) -> dict[str, Any]:
-    if set(value) not in {
+    allowed_shapes = {
         frozenset(RUNNER_FIELDS),
+        frozenset(RUNNER_FIELDS | {"standing_policy_path", "standing_release_ledger"}),
         frozenset(RUNNER_FIELDS | OPTIONAL_RUNNER_FIELDS),
-    } or value.get("schema_version") != 1:
+    }
+    if set(value) not in allowed_shapes or value.get("schema_version") != 1:
         fail("U2 user-runner config contract drifted", INVALID)
     if value.get("status") not in {"paused", "active"}:
         fail("U2 user-runner status must be paused or active", INVALID)
@@ -268,6 +277,28 @@ def validate_config(value: dict[str, Any]) -> dict[str, Any]:
             is_within(standing_ledger, root) for root in protected_roots
         ):
             fail("standing-policy state must remain outside every managed Git worktree", INVALID)
+    command_center_url = value.get("command_center_event_url")
+    if command_center_url is not None:
+        if standing_policy is None:
+            fail("Command Center projection requires the standing-review configuration", INVALID)
+        if not isinstance(command_center_url, str):
+            fail("Command Center event URL is invalid", INVALID)
+        parsed = urllib.parse.urlsplit(command_center_url)
+        try:
+            parsed_port = parsed.port
+        except ValueError:
+            fail("Command Center event URL port is invalid", INVALID)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path != "/api/command-center/events"
+            or parsed_port is None
+        ):
+            fail("Command Center event URL must be an explicit loopback HTTP endpoint", INVALID)
     if value["status"] == "active":
         if not executor.is_dir():
             fail("active U2 user-runner executor_root is unavailable")
@@ -403,6 +434,287 @@ def load_attempts(state: Path) -> dict[str, Any]:
     if not isinstance(value.get("attempts"), dict):
         fail("U2 user-runner attempt ledger is invalid", INVALID)
     return value
+
+
+DIRECTIVE_STATES = [
+    "DIRECTIVE_RECEIVED",
+    "CLASSIFIED",
+    "MANIFEST_DRAFTED",
+    "EXACT_CODE_READY",
+    "AUTOMATION_DETECTED",
+    "POLICY_CHECKED",
+    "ASSIGNED",
+    "WORKER_STARTED",
+    "RESULT_RECORDED",
+    "OTHER_FAMILY_CHECKED",
+    "DONE",
+]
+DIRECTIVE_SUMMARIES = {
+    "DIRECTIVE_RECEIVED": "사용자가 지정한 AI 업무를 접수했습니다.",
+    "CLASSIFIED": "담당 AI와 작업 유형을 분류했습니다.",
+    "MANIFEST_DRAFTED": "범위와 완료 기준이 있는 업무 계약을 만들었습니다.",
+    "EXACT_CODE_READY": "검토할 실제 코드의 Base와 Head를 고정했습니다.",
+    "AUTOMATION_DETECTED": "사용자 소유 자동 실행기가 새 업무를 감지했습니다.",
+    "POLICY_CHECKED": "서명 정책과 호출 한도를 확인했습니다.",
+    "ASSIGNED": "정책에 맞는 담당 AI에게 업무를 배정했습니다.",
+    "WORKER_STARTED": "담당 AI가 고정된 코드에서 작업을 시작했습니다.",
+    "RESULT_RECORDED": "담당 AI의 원본 결과와 결과 해시를 기록했습니다.",
+    "OTHER_FAMILY_CHECKED": "다른 AI가 원본 결과를 별도로 교차검증했습니다.",
+    "DONE": "업무와 교차검증을 완료했습니다.",
+}
+
+
+def load_projection_ledger(state: Path) -> dict[str, Any]:
+    path = state / "command-center-events.json"
+    if not path.exists():
+        return {"schema_version": 1, "delivered": {}}
+    value = load_private_json(path, "Command Center event ledger")
+    if set(value) != {"schema_version", "delivered"} or value.get("schema_version") != 1:
+        fail("Command Center event ledger contract drifted", INVALID)
+    if not isinstance(value.get("delivered"), dict):
+        fail("Command Center event ledger is invalid", INVALID)
+    return value
+
+
+def controller_key_text(config: dict[str, Any]) -> str:
+    try:
+        value = private_file_bytes(Path(config["controller_key_path"]), "controller key").decode("utf-8").strip()
+    except UnicodeDecodeError:
+        fail("controller key must be UTF-8 text")
+    if len(value.encode("utf-8")) < 32:
+        fail("controller key must contain at least 32 bytes")
+    return value
+
+
+def command_center_key_text(config: dict[str, Any]) -> str:
+    controller_key = controller_key_text(config)
+    return hmac.new(
+        controller_key.encode("utf-8"),
+        b"treeXchange-command-center-events-v1",
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def command_center_event_exists(url: str, expected: dict[str, Any]) -> bool:
+    status_url = urllib.parse.urlunsplit(
+        (
+            *urllib.parse.urlsplit(url)[:2],
+            "/api/command-center/event-status",
+            urllib.parse.urlencode({"id": expected["id"]}),
+            "",
+        )
+    )
+    try:
+        with urllib.request.urlopen(status_url, timeout=3) as response:
+            value = json.loads(response.read(1_000_001).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, urllib.error.URLError):
+        return False
+    return bool(
+        isinstance(value, dict)
+        and value.get("found") is True
+        and value.get("id") == expected["id"]
+        and value.get("eventType") == "DIRECTIVE_PROGRESS"
+        and value.get("headSha") == expected["headSha"]
+        and value.get("queueId") == expected["payload"]["queueId"]
+        and value.get("state") == expected["payload"]["state"]
+    )
+
+
+def deliver_command_center_event(url: str, key: str, event_value: dict[str, Any]) -> bool:
+    body = json.dumps(event_value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    timestamp = str(int(time.time()))
+    nonce = f"u2-progress-{uuid.uuid4().hex}"
+    preimage = f"u2-progress-v1.{timestamp}.{nonce}.{body}".encode("utf-8")
+    signature = hmac.new(key.encode("utf-8"), preimage, hashlib.sha256).hexdigest()
+    request = urllib.request.Request(
+        url,
+        data=body.encode("utf-8"),
+        method="POST",
+        headers={
+            "content-type": "application/json; charset=utf-8",
+            "x-tx-key-id": "u2-progress-v1",
+            "x-tx-timestamp": timestamp,
+            "x-tx-nonce": nonce,
+            "x-tx-signature": f"sha256={signature}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            value = json.loads(response.read(100_001).decode("utf-8"))
+            return response.status in {200, 202} and value.get("accepted") is True
+    except urllib.error.HTTPError as error:
+        if error.code == 409:
+            return command_center_event_exists(url, event_value)
+        return False
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, urllib.error.URLError):
+        return False
+
+
+def directive_event_id(queue_id: str, state: str) -> str:
+    digest = hashlib.sha256(f"{queue_id}\0{state}".encode("utf-8")).hexdigest()
+    return f"u2-progress-{digest[:40]}"
+
+
+def load_adjudication(repository: dict[str, Any], projection: dict[str, Any]) -> dict[str, Any] | None:
+    queue_id = projection["queue_id"]
+    path = Path(repository["worktree"]) / ".agent-state/u2-adjudications" / f"{queue_id}.json"
+    if not path.exists():
+        return None
+    value = load_private_json(path, "U2 Codex adjudication")
+    required = {
+        "schema_version", "queue_id", "task_id", "target_sha", "result_digest",
+        "reviewer_family", "verdict", "summary", "recorded_at",
+    }
+    if set(value) != required or value.get("schema_version") != 1:
+        return None
+    if (
+        value.get("queue_id") != queue_id
+        or value.get("task_id") != projection["task_id"]
+        or value.get("target_sha") != projection["target_sha"]
+        or value.get("result_digest") != projection.get("result_digest")
+        or value.get("reviewer_family") != "Codex"
+        or value.get("verdict") not in {"ACCEPTED", "CORRECTION_REQUIRED"}
+        or not isinstance(value.get("summary"), str)
+        or not value["summary"].strip()
+        or len(value["summary"]) > 1000
+        or not isinstance(value.get("recorded_at"), str)
+    ):
+        return None
+    try:
+        recorded_at = dt.datetime.fromisoformat(value["recorded_at"].replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if recorded_at.tzinfo is None:
+        return None
+    return value
+
+
+def directive_projection(inspected: dict[str, Any]) -> dict[str, Any] | None:
+    items = inspected.get("item_projections")
+    origin = inspected.get("origin")
+    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict) or not isinstance(origin, dict):
+        return None
+    item = items[0]
+    required_strings = ["work_item_id", "role", "task_profile", "base_sha", "target_sha", "state"]
+    if any(not isinstance(item.get(field), str) or not item[field] for field in required_strings):
+        return None
+    queue_id = inspected.get("queue_id")
+    requested_assignee = origin.get("requested_assignee")
+    intent = origin.get("intent")
+    if (
+        not isinstance(queue_id, str)
+        or not SAFE_EVENT_ID_RE.fullmatch(queue_id)
+        or not SAFE_EVENT_ID_RE.fullmatch(item["work_item_id"])
+        or requested_assignee != "Claude"
+        or intent not in {"plan", "review", "design_review", "build", "advice"}
+    ):
+        return None
+    return {
+        "queue_id": queue_id,
+        "task_id": item["work_item_id"],
+        "requested_assignee": requested_assignee,
+        "intent": intent,
+        "role": item["role"],
+        "task_profile": item["task_profile"],
+        "base_sha": item["base_sha"],
+        "target_sha": item["target_sha"],
+        "item_state": item["state"],
+        "worker_verdict": item.get("verdict"),
+        "result_summary": item.get("result_summary"),
+        "result_digest": item.get("result_digest"),
+        "policy_id": inspected.get("policy_id") or (
+            f"attended-{inspected.get('approval_digest', '')[:16]}"
+            if inspected.get("authorization_type") == "attended"
+            else None
+        ),
+        "operations_reserved": inspected.get("operations_reserved"),
+    }
+
+
+def sync_command_center_progress(
+    config: dict[str, Any],
+    repository: dict[str, Any],
+    inspected: dict[str, Any] | None,
+    *,
+    worker_started: bool = False,
+    deliver: Callable[[str, str, dict[str, Any]], bool] = deliver_command_center_event,
+) -> None:
+    url = config.get("command_center_event_url")
+    if not isinstance(url, str) or not isinstance(inspected, dict):
+        return
+    projection = directive_projection(inspected)
+    if projection is None:
+        return
+    desired = 4
+    if projection["policy_id"] is not None:
+        desired = 6
+    if worker_started or isinstance(projection["operations_reserved"], int) and projection["operations_reserved"] > 0:
+        desired = 7
+    if projection["item_state"] in {"completed", "changes_requested", "failed"}:
+        desired = 8
+        if projection["result_digest"] is None:
+            projection["worker_verdict"] = "FAILED"
+            projection["result_summary"] = "실행이 안전하게 실패 또는 격리되었습니다."
+            projection["result_digest"] = hashlib.sha256(
+                f"{projection['queue_id']}\0{projection['task_id']}\0failed".encode("utf-8")
+            ).hexdigest()
+    adjudication = load_adjudication(repository, projection) if desired >= 8 else None
+    if adjudication is not None:
+        desired = 9
+        if adjudication["verdict"] == "ACCEPTED":
+            desired = 10
+
+    state_directory = private_state_directory(config)
+    ledger = load_projection_ledger(state_directory)
+    key = command_center_key_text(config)
+    batch_started_at = dt.datetime.now(dt.timezone.utc)
+    for index, state in enumerate(DIRECTIVE_STATES[: desired + 1]):
+        event_id = directive_event_id(projection["queue_id"], state)
+        if event_id in ledger["delivered"]:
+            continue
+        has_assignment = index >= DIRECTIVE_STATES.index("ASSIGNED")
+        has_policy = index >= DIRECTIVE_STATES.index("POLICY_CHECKED")
+        has_result = index >= DIRECTIVE_STATES.index("RESULT_RECORDED")
+        has_crosscheck = index >= DIRECTIVE_STATES.index("OTHER_FAMILY_CHECKED")
+        event_value = {
+            "id": event_id,
+            "eventType": "DIRECTIVE_PROGRESS",
+            "occurredAt": (
+                batch_started_at + dt.timedelta(microseconds=index)
+            ).isoformat().replace("+00:00", "Z"),
+            "programId": "OPS",
+            "workItemId": None,
+            "actorFamily": "Controller",
+            "actorRole": "U2 progress projector",
+            "runId": projection["queue_id"],
+            "headSha": projection["target_sha"],
+            "source": "CONTROLLER",
+            "evidenceUrl": None,
+            "summary": DIRECTIVE_SUMMARIES[state],
+            "payload": {
+                "queueId": projection["queue_id"],
+                "taskId": projection["task_id"],
+                "state": state,
+                "stateIndex": index,
+                "requestedAssignee": projection["requested_assignee"],
+                "actualAssignee": "Claude" if has_assignment else None,
+                "intent": projection["intent"],
+                "role": projection["role"],
+                "taskProfile": projection["task_profile"],
+                "codeState": "clean_exact_head",
+                "baseSha": projection["base_sha"],
+                "targetSha": projection["target_sha"],
+                "policyId": projection["policy_id"] if has_policy else None,
+                "workerVerdict": projection["worker_verdict"] if has_result else None,
+                "resultSummary": projection["result_summary"] if has_result else None,
+                "resultDigest": projection["result_digest"] if has_result else None,
+                "crosscheckVerdict": adjudication["verdict"] if has_crosscheck else None,
+            },
+        }
+        if not deliver(url, key, event_value):
+            return
+        ledger["delivered"][event_id] = {"delivered_at": utc_now(), "state": state}
+        save_private_json(state_directory / "command-center-events.json", ledger)
 
 
 def runner_environment(config: dict[str, Any], repository: dict[str, Any]) -> dict[str, str]:
@@ -606,6 +918,7 @@ def run_cycle(
     ledger = load_attempts(state_directory)
     for repository, queue in queue_candidates(config, command=command):
         inspected = inspect_queue(config, repository, queue, command)
+        sync_command_center_progress(config, repository, inspected)
         if (
             isinstance(inspected, dict)
             and inspected.get("status") == "draft_paused"
@@ -662,6 +975,7 @@ def run_cycle(
                 if released.returncode != 0:
                     continue
                 inspected = inspect_queue(config, repository, queue, command)
+                sync_command_center_progress(config, repository, inspected)
         if not actionable_queue(inspected):
             continue
         digest = inspected.get("approval_digest")
@@ -682,6 +996,9 @@ def run_cycle(
             "status": "reserved_before_launch",
         }
         save_private_json(state_directory / "attempts.json", ledger)
+        sync_command_center_progress(
+            config, repository, inspected, worker_started=True
+        )
 
         executor = Path(config["executor_root"])
         controller = executor / "scripts/u2_controller.py"
@@ -705,6 +1022,10 @@ def run_cycle(
         ledger["attempts"][key]["finished_at"] = utc_now()
         ledger["attempts"][key]["status"] = outcome
         save_private_json(state_directory / "attempts.json", ledger)
+        if config.get("command_center_event_url") is not None:
+            sync_command_center_progress(
+                config, repository, inspect_queue(config, repository, queue, command)
+            )
         return {
             "status": "ATTEMPT_FINISHED",
             "attempted": True,
@@ -878,6 +1199,7 @@ def configure_standing_review(args: argparse.Namespace) -> None:
         "trusted_executor_sha": args.trusted_executor_sha,
         "standing_policy_path": str(policy),
         "standing_release_ledger": str(ledger),
+        "command_center_event_url": args.command_center_event_url,
         "repositories": [
             *config["repositories"],
             {
@@ -900,6 +1222,81 @@ def configure_standing_review(args: argparse.Namespace) -> None:
             "lane_id": args.lane_id,
             "worktree_parent": str(args.worktree_parent.expanduser().resolve()),
             "automatic_retries": 0,
+            "command_center_projection": "configured_not_restarted",
+        }
+    )
+
+
+def record_codex_adjudication(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    if config["status"] != "active":
+        fail("Codex adjudication requires an active user runner")
+    require_exact_executor(config)
+    repo = args.repo.expanduser().resolve()
+    queue = args.queue.expanduser().resolve()
+    matching = None
+    for entry in config["repositories"]:
+        if entry["repository"] != args.repository:
+            continue
+        if set(entry) == LEGACY_REPOSITORY_FIELDS and Path(entry["worktree"]).resolve() == repo:
+            matching = entry
+            break
+        if set(entry) == DISCOVERY_REPOSITORY_FIELDS:
+            try:
+                repo.relative_to(Path(entry["worktree_parent"]).resolve())
+                matching = {
+                    "repository": entry["repository"],
+                    "worktree": str(repo),
+                    "queue_directory": entry["queue_directory"],
+                    "git_excludes_file": entry.get("git_excludes_file"),
+                    "lane_id": entry["lane_id"],
+                }
+                break
+            except ValueError:
+                continue
+    if matching is None:
+        fail("Codex adjudication repository is outside configured runner lanes")
+    inspected = inspect_queue(config, matching, queue)
+    projection = directive_projection(inspected) if isinstance(inspected, dict) else None
+    if projection is None or projection["item_state"] not in {"completed", "changes_requested"}:
+        fail("Codex adjudication requires one completed Claude result")
+    if projection["target_sha"] != args.expected_target_sha:
+        fail("Codex adjudication target Head changed")
+    if projection["result_digest"] != args.expected_result_digest:
+        fail("Codex adjudication result digest changed")
+    summary = args.summary.strip()
+    if not summary or len(summary) > 1000:
+        fail("Codex adjudication summary must contain 1 to 1000 characters", INVALID)
+    destination = repo / ".agent-state/u2-adjudications" / f"{projection['queue_id']}.json"
+    try:
+        destination.resolve().relative_to((repo / ".agent-state/u2-adjudications").resolve())
+    except ValueError:
+        fail("Codex adjudication path escaped its private directory")
+    if destination.exists():
+        fail("Codex adjudication already exists; corrections require a new review task")
+    save_private_json(
+        destination,
+        {
+            "schema_version": 1,
+            "queue_id": projection["queue_id"],
+            "task_id": projection["task_id"],
+            "target_sha": projection["target_sha"],
+            "result_digest": projection["result_digest"],
+            "reviewer_family": "Codex",
+            "verdict": args.verdict,
+            "summary": summary,
+            "recorded_at": utc_now(),
+        },
+    )
+    sync_command_center_progress(config, matching, inspected)
+    print_event(
+        {
+            "status": "CODEX_ADJUDICATION_RECORDED",
+            "queue_id": projection["queue_id"],
+            "task_id": projection["task_id"],
+            "target_sha": projection["target_sha"],
+            "result_digest": projection["result_digest"],
+            "verdict": args.verdict,
         }
     )
 
@@ -961,7 +1358,21 @@ def parser() -> argparse.ArgumentParser:
         "--branch-prefix", default="codex/review-snapshot/", choices=sorted(ALLOWED_DISCOVERY_BRANCH_PREFIXES)
     )
     configure.add_argument("--git-excludes-file", type=Path, required=True)
+    configure.add_argument(
+        "--command-center-event-url",
+        default="http://127.0.0.1:3000/api/command-center/events",
+    )
     configure.set_defaults(handler=configure_standing_review)
+    adjudicate = subparsers.add_parser("record-codex-adjudication")
+    adjudicate.add_argument("--config", type=Path, required=True)
+    adjudicate.add_argument("--repository", default="leeshsnu/treeXchange-season2", choices=sorted(ALLOWED_REPOSITORIES))
+    adjudicate.add_argument("--repo", type=Path, required=True)
+    adjudicate.add_argument("--queue", type=Path, required=True)
+    adjudicate.add_argument("--expected-target-sha", required=True)
+    adjudicate.add_argument("--expected-result-digest", required=True)
+    adjudicate.add_argument("--verdict", choices=["ACCEPTED", "CORRECTION_REQUIRED"], required=True)
+    adjudicate.add_argument("--summary", required=True)
+    adjudicate.set_defaults(handler=record_codex_adjudication)
     return value
 
 

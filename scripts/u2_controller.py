@@ -1423,6 +1423,33 @@ def inspect_queue(args: argparse.Namespace) -> None:
         ),
         None,
     )
+    item_projections = []
+    for item in queue["items"]:
+        result = item.get("result")
+        result_digest = (
+            hashlib.sha256(
+                json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if isinstance(result, dict)
+            else None
+        )
+        item_projections.append(
+            {
+                "work_item_id": item["work_item_id"],
+                "role": item["role"],
+                "task_profile": item["task_profile"],
+                "base_sha": item["base_sha"],
+                "target_sha": item["target_sha"],
+                "state": item["state"],
+                "attempts": item["attempts"],
+                "verdict": result.get("verdict") if isinstance(result, dict) else None,
+                "result_summary": result.get("summary") if isinstance(result, dict) else None,
+                "result_digest": result_digest,
+            }
+        )
+    policy_id = None
+    if set(queue["release"]) == STANDING_RELEASE_FIELDS:
+        policy_id = queue["release"]["standing_policy"]["policy_id"]
     print(
         json.dumps(
             {
@@ -1437,6 +1464,8 @@ def inspect_queue(args: argparse.Namespace) -> None:
                     if queue["status"] == "released"
                     else None
                 ),
+                "policy_id": policy_id,
+                "item_projections": item_projections,
                 "counts": counts,
                 "next_ready": next_item is not None,
                 "next_work_item_id": (
