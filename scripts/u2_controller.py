@@ -1223,17 +1223,13 @@ def write_external_owner_json(repo: Path, path: Path, value: dict[str, Any], lab
             os.close(descriptor)
 
 
-def sign_standing_policy(args: argparse.Namespace) -> None:
-    worker.require_trusted_config_path(args.config)
-    config = worker.load_config(args.config)
-    worker.require_activation(config)
-    repo = args.repo.resolve()
+def prepare_standing_policy_draft(repo: Path, path: Path) -> dict[str, Any]:
     repository = bridge.repository_identity(repo)
     if repository not in bridge.ALLOWED_REPOSITORIES:
         fail("standing policy repository is outside the fixed allowlist")
     try:
         source = worker.private_agent_path(
-            repo, args.policy, "U2 standing-policy draft", must_exist=True
+            repo, path, "U2 standing-policy draft", must_exist=True
         )
         unsigned = worker.load_json(source, "U2 standing-policy draft")
     except worker.WorkerError as error:
@@ -1249,6 +1245,39 @@ def sign_standing_policy(args: argparse.Namespace) -> None:
         "signature": "A" * 86 + "==",
     }
     policy["policy_digest"] = standing_policy_digest(policy)
+    validate_standing_policy(policy)
+    return policy
+
+
+def inspect_standing_policy_draft(args: argparse.Namespace) -> None:
+    policy = prepare_standing_policy_draft(args.repo.resolve(), args.policy)
+    print(
+        json.dumps(
+            {
+                "status": "VALID_UNSIGNED_STANDING_POLICY_NOT_ACTIVE",
+                "policy_id": policy["policy_id"],
+                "policy_digest": policy["policy_digest"],
+                "repository": policy["repository"],
+                "allowed_intents": policy["allowed_intents"],
+                "allowed_profiles": policy["allowed_profiles"],
+                "allowed_read_roots": policy["allowed_read_roots"],
+                "maximum_calls_per_utc_day": policy["maximum_calls_per_utc_day"],
+                "maximum_turns": policy["maximum_turns"],
+                "expires_at": policy["expires_at"],
+                "automatic_retries": policy["automatic_retries"],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+
+
+def sign_standing_policy(args: argparse.Namespace) -> None:
+    worker.require_trusted_config_path(args.config)
+    config = worker.load_config(args.config)
+    worker.require_activation(config)
+    repo = args.repo.resolve()
+    policy = prepare_standing_policy_draft(repo, args.policy)
     if not hmac.compare_digest(policy["policy_digest"], args.expected_digest):
         fail("user-approved standing-policy digest does not match the draft")
     signature = ed25519_signature(standing_policy_payload(policy), args.approval_private_key)
@@ -1515,6 +1544,10 @@ def parser() -> argparse.ArgumentParser:
     sign_policy.add_argument("--approval-private-key", type=Path, required=True)
     sign_policy.add_argument("--output", type=Path, required=True)
     sign_policy.set_defaults(handler=sign_standing_policy)
+    inspect_policy = subparsers.add_parser("inspect-standing-policy-draft")
+    inspect_policy.add_argument("--repo", type=Path, required=True)
+    inspect_policy.add_argument("--policy", type=Path, required=True)
+    inspect_policy.set_defaults(handler=inspect_standing_policy_draft)
     standing = subparsers.add_parser("release-under-standing-policy")
     standing.add_argument("--repo", type=Path, required=True)
     standing.add_argument("--queue", type=Path, required=True)

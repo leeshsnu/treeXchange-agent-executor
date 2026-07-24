@@ -258,6 +258,30 @@ def maker_queue(repository: ReviewRepository, state: str = "ready") -> dict:
 
 
 class U2ControllerTests(unittest.TestCase):
+    def test_unsigned_standing_policy_has_one_machine_computed_approval_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ReviewRepository(directory)
+            signed = signed_standing_policy(repository, daily=12)
+            unsigned = {
+                key: value
+                for key, value in signed.items()
+                if key not in {"policy_digest", "signature"}
+            }
+            path = repository.state / "standing-policy-draft.json"
+            controller.bridge.save_private_json(path, unsigned)
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                controller.inspect_standing_policy_draft(
+                    argparse.Namespace(repo=repository.root, policy=path)
+                )
+
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "VALID_UNSIGNED_STANDING_POLICY_NOT_ACTIVE")
+            self.assertEqual(result["policy_digest"], signed["policy_digest"])
+            self.assertEqual(result["maximum_calls_per_utc_day"], 12)
+            self.assertEqual(result["automatic_retries"], 0)
+
     def test_signed_standing_policy_releases_only_one_explicit_read_only_task(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

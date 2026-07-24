@@ -309,6 +309,9 @@ daily reservation prevents policy or queue substitution. Both
 `standing_policy_path` and `standing_release_ledger` must point to owner-only
 state outside all managed worktrees. They remain `null` in the checked-in
 example, so this capability is not active by installation alone.
+`u2_controller.py inspect-standing-policy-draft` validates the unsigned policy
+and prints the one canonical digest the user would approve; operators do not
+calculate or transcribe that digest by hand.
 
 For dirty working-tree reviews, a discovery lane may point at one
 owner-controlled parent directory and the fixed
