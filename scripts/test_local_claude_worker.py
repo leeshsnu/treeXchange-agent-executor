@@ -444,6 +444,10 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         self.assertIn("[]", server["args"])
         self.assertIn('["services/model/HANDOFF_NEEDED.md"]', server["args"])
         self.assertIn("--review-receipt", server["args"])
+        chunk_index = server["args"].index("--diff-chunk-bytes")
+        self.assertEqual(
+            server["args"][chunk_index + 1], str(worker.REVIEW_DIFF_CHUNK_BYTES)
+        )
         settings = json.loads(command[command.index("--settings") + 1])
         for tool in ("Bash", "Read", "Glob", "Grep", "Edit", "Write"):
             self.assertIn(tool, settings["permissions"]["deny"])
@@ -487,7 +491,16 @@ class LocalClaudeWorkerTests(unittest.TestCase):
         self.assertNotIn(adversarial, prompt)
         self.assertNotIn("BEGIN_UNTRUSTED_DIFF_", prompt)
         self.assertIn(digest, prompt)
-        self.assertIn("read_diff exactly once", prompt)
+        self.assertIn("read_diff with cursor 0", prompt)
+        self.assertIn("exact returned next_cursor", prompt)
+        self.assertIn("private evidence receipt", prompt)
+
+    def test_reviewer_evidence_budget_reserves_one_turn_for_the_final_result(self):
+        self.assertEqual(worker.reviewer_evidence_budget(1), 0)
+        self.assertEqual(
+            worker.reviewer_evidence_budget(6),
+            5 * worker.REVIEW_DIFF_MIN_PAYLOAD_BYTES,
+        )
 
     def test_review_receipt_machine_binds_exact_diff_evidence(self):
         with tempfile.TemporaryDirectory() as directory:

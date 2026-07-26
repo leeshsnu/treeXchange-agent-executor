@@ -103,6 +103,18 @@ def require_exact_repository_state(repo: Path, manifest: dict[str, Any]) -> None
 
 
 def require_reviewer_diff_scope(repo: Path, item: dict[str, Any]) -> None:
+    try:
+        normalized_read_paths = [
+            worker.normalize_scope_path(path, "read_paths")
+            for path in item["read_paths"]
+        ]
+    except worker.WorkerError as error:
+        fail(str(error), error.code)
+    if any(worker.read_scope_is_sensitive(path) for path in normalized_read_paths):
+        fail(
+            "task intake reviewer read scope intersects worker-protected paths",
+            INVALID,
+        )
     completed = subprocess.run(
         [
             "git", "diff", "--name-only", "-z",
@@ -134,6 +146,16 @@ def require_reviewer_diff_scope(repo: Path, item: dict[str, Any]) -> None:
         fail(
             "task intake review diff contains paths outside allowed_paths: "
             + ", ".join(outside[:5]),
+            INVALID,
+        )
+    try:
+        diff = bridge.bounded_diff(repo, item["base_sha"], item["target_sha"])
+    except bridge.BridgeError as error:
+        fail(str(error), error.code)
+    maximum_evidence_bytes = worker.reviewer_evidence_budget(item["maximum_turns"])
+    if len(diff.encode("utf-8")) > maximum_evidence_bytes:
+        fail(
+            "task intake review diff exceeds the evidence budget for maximum_turns",
             INVALID,
         )
 

@@ -131,8 +131,10 @@ review bridge. It defines two explicit execution profiles:
   embedded in the authority-bearing prompt: `read_diff` derives it from the
   signed exact Base and Head through the same canonical bounded-diff generator
   used to compute the prompt digest and byte count, rechecks the signed
-  changed-path scope and returns it as untrusted tool evidence. The trusted MCP
-  writes an owner-only one-use receipt; the controller rejects the review unless
+  changed-path scope and returns it as sequential fixed-size untrusted evidence
+  chunks. Every call must use the exact returned byte cursor; skips, replays and
+  out-of-order reads are denied. The trusted MCP writes an owner-only one-use
+  receipt only after the final chunk; the controller rejects the review unless
   that receipt machine-matches the signed Base, Head, digest and byte count.
   Claude's built-in file tools are disabled. Signed, task-required project
   contracts under workflow, config, operations and governance paths may be
@@ -327,8 +329,13 @@ on the dashboard's bounded recent-history page.
 
 Task intake enumerates the exact Base-to-Head changed paths before it creates a
 queue and rejects a Reviewer manifest whose signed diff scopes miss even one
-changed path. A controller failure after worker start but before a model result
-is projected as a deterministic `FAILED` result and is never retried. Later
+changed path. It also rejects worker-protected read roots and a diff whose byte
+size cannot be consumed within the signed turn budget, so impossible work never
+reserves a model call. Command Center events use one globally monotonic
+millisecond timestamp ledger across every discovered queue; a schema-one ledger
+is migrated without losing delivered event ids. A controller failure after
+worker start but before a model result is projected as a deterministic `FAILED`
+result and is never retried. Later
 executor-only hardening uses `upgrade-trusted-executor`, which requires the
 exact prior config digest and changes only the pinned executor SHA.
 

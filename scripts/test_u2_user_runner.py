@@ -463,6 +463,36 @@ class U2UserRunnerTests(unittest.TestCase):
             runner.sync_command_center_progress(config, repository, completed_projection, deliver=deliver)
             self.assertEqual([event["payload"]["state"] for event in delivered], runner.DIRECTIVE_STATES)
             self.assertEqual(delivered[-1]["payload"]["crosscheckVerdict"], "ACCEPTED")
+            occurred_at = [event["occurredAt"] for event in delivered]
+            self.assertEqual(occurred_at, sorted(set(occurred_at)))
+            ledger_value = json.loads(
+                (fixture.state / "command-center-events.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(ledger_value["schema_version"], 2)
+            self.assertEqual(ledger_value["last_occurred_at"], occurred_at[-1])
+
+    def test_command_center_projection_ledger_migrates_schema_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            fixture.state.mkdir(mode=0o700)
+            runner.save_private_json(
+                fixture.state / "command-center-events.json",
+                {
+                    "schema_version": 1,
+                    "delivered": {
+                        "old-event": {
+                            "state": "DONE",
+                            "delivered_at": "2026-07-25T01:02:03.456Z",
+                        }
+                    },
+                },
+            )
+            value = runner.load_projection_ledger(fixture.state)
+            self.assertEqual(value["schema_version"], 2)
+            self.assertEqual(value["delivered"]["old-event"]["state"], "DONE")
+            self.assertEqual(
+                value["last_occurred_at"], "2026-07-25T01:02:03.456Z"
+            )
 
     def test_pre_model_controller_failure_is_projected_without_a_model_retry(self):
         with tempfile.TemporaryDirectory() as directory:
