@@ -291,6 +291,59 @@ stage-sized mandate: it can contain one to seven exact work items and expires in
 at most seven days. The installed worker itself does not need weekly code
 reactivation.
 
+User-directed work has a separate fail-closed intake. `scripts/u2_task_intake.py`
+turns one bounded manifest into a paused queue and binds the task origin,
+requested assignee, intent and original-instruction digest to the immutable queue
+digest. It verifies the exact checked-out branch and Head; it does not release a
+queue or invoke Claude. The manifest contract is
+`schemas/u2-task-manifest.schema.json`.
+
+An optional one-time signed standing policy can release recurring read-only
+Reviewer tasks without asking the user to approve every queue digest. It can
+cover only explicit user directives, one Reviewer call per task, configured
+read roots, selected profiles, a numeric UTC daily cap and a fixed expiry. It
+cannot authorize Maker work, retries, source or Git writes, merge, deployment or
+external actions. The user-owned runner records the release attempt before the
+controller call, and a controller-signed exact queue release plus an external
+daily reservation prevents policy or queue substitution. Both
+`standing_policy_path` and `standing_release_ledger` must point to owner-only
+state outside all managed worktrees. They remain `null` in the checked-in
+example, so this capability is not active by installation alone.
+`u2_controller.py inspect-standing-policy-draft` validates the unsigned policy
+and prints the one canonical digest the user would approve; operators do not
+calculate or transcribe that digest by hand.
+After signing, `u2_user_runner.py configure-standing-review` atomically binds
+the prior runner SHA, newly installed exact SHA, signed policy, owner-only
+release ledger and fixed review-snapshot discovery lane. It does not restart
+the LaunchAgent or invoke a model. The same command binds the fixed loopback
+Command Center event endpoint. Queue discovery, policy check, assignment,
+worker start and result metadata are HMAC-signed with a one-way event-only key
+derived from the controller key. The web process never receives the controller
+key itself. That derived identity is accepted only for `DIRECTIVE_PROGRESS`, so
+it cannot forge a work release, assignment, decision or completion in the main
+orchestration ledger. Failed projection retries metadata only and never retries
+a model call. Collision recovery queries the exact event id instead of relying
+on the dashboard's bounded recent-history page.
+
+`u2_user_runner.py record-codex-adjudication` binds Codex's later cross-check to
+the exact Claude result digest and reviewed Head. The runner emits `DONE` only
+after that separate adjudication says `ACCEPTED`; Claude's full private output
+is not copied into the dashboard event. This record is protected by the local
+owner-only runner boundary; it is not represented as a cryptographic remote
+Codex attestation.
+
+For dirty working-tree reviews, a discovery lane may point at one
+owner-controlled parent directory and the fixed
+`codex/review-snapshot/` branch prefix. The runner discovers new immediate
+child worktrees there, but the controller still verifies each repository,
+branch, exact Head, clean state, queue path and signed scope before release or
+execution. Other branch families, symlinks, nested roots and group/other
+writable directories are skipped or rejected. This avoids editing runner
+configuration for every disposable review snapshot.
+
+The exact scenario matrix, including what happens when the user assigns Claude
+implementation instead of review, is in `docs/U2_USER_DIRECTED_TASKS.md`.
+
 Repository context is also bounded independently of write scope. Claude cannot
 read `.github`, `config`, `ops`, Git-private state, local agent state, Claude
 settings or environment files. A signed task may read `docs/governance` because

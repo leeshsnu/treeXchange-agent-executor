@@ -11,6 +11,8 @@ python3 -m json.tool schemas/u1-review-output.schema.json >/dev/null
 python3 -m json.tool schemas/u1-maker-output.schema.json >/dev/null
 python3 -m json.tool schemas/u2-local-work-request.schema.json >/dev/null
 python3 -m json.tool schemas/u2-maker-output.schema.json >/dev/null
+python3 -m json.tool schemas/u2-task-manifest.schema.json >/dev/null
+python3 -m json.tool schemas/u2-standing-review-policy.schema.json >/dev/null
 for review in reviews/*.json; do
   python3 -m json.tool "$review" >/dev/null
 done
@@ -21,6 +23,7 @@ python3 -m py_compile \
   scripts/local_claude_worker.py \
   scripts/u2_activation_readiness.py \
   scripts/u2_controller.py \
+  scripts/u2_task_intake.py \
   scripts/u2_user_runner.py \
   scripts/scoped_repository_mcp.py \
   scripts/test_u1_executor.py \
@@ -29,6 +32,7 @@ python3 -m py_compile \
   scripts/test_local_claude_worker.py \
   scripts/test_u2_activation_readiness.py \
   scripts/test_u2_controller.py \
+  scripts/test_u2_task_intake.py \
   scripts/test_u2_user_runner.py \
   scripts/test_scoped_repository_mcp.py
 python3 -m unittest -v \
@@ -38,6 +42,7 @@ python3 -m unittest -v \
   scripts/test_local_claude_worker.py \
   scripts/test_u2_activation_readiness.py \
   scripts/test_u2_controller.py \
+  scripts/test_u2_task_intake.py \
   scripts/test_u2_user_runner.py \
   scripts/test_scoped_repository_mcp.py
 ruby -e 'require "yaml"; Dir[".github/workflows/*.{yml,yaml}"].each { |path| YAML.parse_file(path) }'

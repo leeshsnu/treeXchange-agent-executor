@@ -11,10 +11,20 @@
   "controller_key_path": "/Users/YOU/Library/Application Support/treeXchange-u2/keys/controller.key",
   "approval_public_key_path": "/Users/YOU/Library/Application Support/treeXchange-u2/keys/approval-public.pem",
   "approval_public_key_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "standing_policy_path": null,
+  "standing_release_ledger": null,
   "repositories": [
     {
       "repository": "leeshsnu/treeXchange-season2",
       "worktree": "/absolute/path/to/treeXchange-season2-worktree",
+      "queue_directory": ".agent-state/u2-queues",
+      "git_excludes_file": null
+    },
+    {
+      "lane_id": "season2-review-snapshots",
+      "repository": "leeshsnu/treeXchange-season2",
+      "worktree_parent": "/absolute/path/to/treeXchange-season2-review-worktrees",
+      "branch_prefix": "codex/review-snapshot/",
       "queue_directory": ".agent-state/u2-queues",
       "git_excludes_file": null
     }

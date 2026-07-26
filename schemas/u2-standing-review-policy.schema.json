@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://treexchange.local/schemas/u2-standing-review-policy.schema.json",
+  "title": "treeXchange U2 signed standing Reviewer policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "policy_id", "status", "approval_key_id", "approved_by",
+    "approved_at", "expires_at", "repository", "allowed_origins", "allowed_intents",
+    "allowed_roles", "allowed_profiles", "allowed_read_roots", "maximum_calls_per_task",
+    "maximum_calls_per_utc_day", "maximum_turns", "automatic_retries",
+    "policy_digest", "signature"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "policy_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{7,95}$" },
+    "status": { "const": "active" },
+    "approval_key_id": { "const": "u2-attended-approval-v1" },
+    "approved_by": { "type": "string", "minLength": 1 },
+    "approved_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "repository": {
+      "enum": ["leeshsnu/treeXchange-agent-executor", "leeshsnu/treeXchange-season2"]
+    },
+    "allowed_origins": { "const": ["user_directive"] },
+    "allowed_intents": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": { "enum": ["review", "design_review", "advice"] }
+    },
+    "allowed_roles": { "const": ["repository_reviewer"] },
+    "allowed_profiles": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": { "enum": ["standard", "design", "advanced", "insight"] }
+    },
+    "allowed_read_roots": {
+      "type": "array", "minItems": 1, "maxItems": 24,
+      "uniqueItems": true, "items": { "type": "string", "minLength": 1 }
+    },
+    "maximum_calls_per_task": { "const": 1 },
+    "maximum_calls_per_utc_day": { "type": "integer", "minimum": 1, "maximum": 24 },
+    "maximum_turns": { "type": "integer", "minimum": 1, "maximum": 8 },
+    "automatic_retries": { "const": 0 },
+    "policy_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+  }
+}

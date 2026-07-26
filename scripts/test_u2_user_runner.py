@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import hmac
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -97,6 +100,145 @@ def completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProc
 
 
 class U2UserRunnerTests(unittest.TestCase):
+    def test_review_snapshot_lane_allows_same_repository_without_manual_config_per_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            parent = fixture.root / "review-worktrees"
+            parent.mkdir()
+            value = fixture.config()
+            value["repositories"].append(
+                {
+                    "lane_id": "season2-review-snapshots",
+                    "repository": "leeshsnu/treeXchange-season2",
+                    "worktree_parent": str(parent),
+                    "branch_prefix": "codex/review-snapshot/",
+                    "queue_directory": ".agent-state/u2-queues",
+                    "git_excludes_file": None,
+                }
+            )
+            runner.validate_config(value)
+
+            duplicate = json.loads(json.dumps(value))
+            duplicate["repositories"].append(dict(duplicate["repositories"][-1]))
+            with self.assertRaisesRegex(runner.RunnerError, "lane is duplicated"):
+                runner.validate_config(duplicate)
+
+    def test_load_config_accepts_external_review_snapshot_lane(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            parent = fixture.root / "review-worktrees"
+            parent.mkdir()
+            value = fixture.config(status="paused")
+            value["repositories"].append(
+                {
+                    "lane_id": "season2-review-snapshots",
+                    "repository": "leeshsnu/treeXchange-season2",
+                    "worktree_parent": str(parent),
+                    "branch_prefix": "codex/review-snapshot/",
+                    "queue_directory": ".agent-state/u2-queues",
+                    "git_excludes_file": None,
+                }
+            )
+            config_path = fixture.root / "runner.json"
+            config_path.write_text(json.dumps(value), encoding="utf-8")
+            os.chmod(config_path, 0o600)
+
+            loaded = runner.load_config(config_path)
+
+            self.assertEqual(loaded["repositories"][-1]["lane_id"], "season2-review-snapshots")
+
+    def test_discovery_lane_finds_only_cleanly_named_review_worktrees(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "reviews"
+            parent.mkdir()
+            review = parent / "review-one"
+            review.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=review, check=True, capture_output=True)
+            subprocess.run(["git", "switch", "-c", "codex/review-snapshot/one"], cwd=review, check=True, capture_output=True)
+            queue_dir = review / ".agent-state/u2-queues"
+            queue_dir.mkdir(parents=True)
+            (queue_dir / "task.json").write_text("{}\n", encoding="utf-8")
+            ignored = parent / "maker"
+            ignored.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=ignored, check=True, capture_output=True)
+            entry = {
+                "lane_id": "season2-review-snapshots",
+                "repository": "leeshsnu/treeXchange-season2",
+                "worktree_parent": str(parent),
+                "branch_prefix": "codex/review-snapshot/",
+                "queue_directory": ".agent-state/u2-queues",
+                "git_excludes_file": None,
+            }
+            candidates = runner.queue_candidates(
+                {"repositories": [entry]}, command=runner.run_command
+            )
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0][0]["worktree"], str(review.resolve()))
+            self.assertEqual(candidates[0][1], queue_dir.resolve() / "task.json")
+
+    def test_standing_policy_releases_then_runs_one_user_directed_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            policy = fixture.root / "standing-policy.json"
+            policy.write_text("{}\n", encoding="utf-8")
+            os.chmod(policy, 0o600)
+            standing_ledger = fixture.root / "standing-ledger"
+            standing_ledger.mkdir(mode=0o700)
+            config = fixture.config()
+            config["standing_policy_path"] = str(policy)
+            config["standing_release_ledger"] = str(standing_ledger)
+            draft = {
+                "status": "draft_paused",
+                "queue_id": "u2-user-review-01",
+                "origin": {
+                    "requested_assignee": "Claude",
+                    "intent": "review",
+                },
+                "next_ready": True,
+                "next_work_item_id": "OPS-USER-01",
+                "next_role": "repository_reviewer",
+                "operations_reserved": 0,
+                "maximum_operations": 0,
+                "approval_digest": "d" * 64,
+                "external_release_claimed": False,
+            }
+            released = {
+                **draft,
+                "status": "released",
+                "authorization_type": "standing_policy",
+                "maximum_operations": 1,
+            }
+            inspections = iter([draft, released])
+            calls: list[list[str]] = []
+
+            def command(args, **_kwargs):
+                calls.append(list(args))
+                if "inspect" in args:
+                    return completed(json.dumps(next(inspections)))
+                if "release-under-standing-policy" in args:
+                    return completed('{"status":"RELEASED_UNDER_STANDING_POLICY"}')
+                return completed('{"status":"WORK_COMPLETED"}')
+
+            with mock.patch.object(runner, "ROOT", fixture.executor):
+                result = runner.run_cycle(config, command=command)
+            self.assertTrue(result["attempted"])
+            self.assertEqual(result["outcome"], "completed")
+            self.assertEqual(
+                [
+                    "inspect" if "inspect" in args else
+                    "release" if "release-under-standing-policy" in args else
+                    "run"
+                    for args in calls
+                ],
+                ["inspect", "release", "inspect", "run"],
+            )
+            attempts = json.loads((fixture.state / "attempts.json").read_text())["attempts"]
+            self.assertEqual(
+                sorted(entry["status"] for entry in attempts.values()),
+                ["completed", "standing_release_completed"],
+            )
+
     def test_active_config_rejects_a_swapped_approval_public_key(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = UserRunnerFixture(directory)
@@ -181,6 +323,271 @@ class U2UserRunnerTests(unittest.TestCase):
         args = mock.Mock(label="../../evil")
         with self.assertRaisesRegex(runner.RunnerError, "label is invalid"):
             runner.install_launch_agent(args)
+
+    def test_launch_agent_uses_owner_only_umask_for_runtime_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            payload = runner.launch_agent_payload(
+                fixture.config(),
+                fixture.state,
+                "com.treexchange.u2-user-runner",
+                fixture.root / "runner.json",
+            )
+            self.assertEqual(payload["Umask"], 0o077)
+            self.assertEqual(payload["StandardOutPath"], str(fixture.state / "runner.stdout.log"))
+            self.assertEqual(payload["StandardErrorPath"], str(fixture.state / "runner.stderr.log"))
+
+    def test_standing_review_configuration_is_exact_atomic_and_not_a_model_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            config_path = fixture.root / "runner.json"
+            value = fixture.config()
+            config_path.write_text(json.dumps(value), encoding="utf-8")
+            os.chmod(config_path, 0o600)
+            policy = fixture.root / "standing-policy.json"
+            policy.write_text("{}\n", encoding="utf-8")
+            os.chmod(policy, 0o600)
+            ledger = fixture.root / "standing-ledger"
+            ledger.mkdir(mode=0o700)
+            reviews = fixture.root / "review-worktrees"
+            reviews.mkdir()
+            excludes = fixture.state / "git-excludes"
+            args = argparse.Namespace(
+                config=config_path,
+                expected_current_sha=fixture.sha,
+                trusted_executor_sha=fixture.sha,
+                standing_policy=policy,
+                standing_release_ledger=ledger,
+                lane_id="season2-review-snapshots",
+                repository="leeshsnu/treeXchange-season2",
+                worktree_parent=reviews,
+                branch_prefix="codex/review-snapshot/",
+                git_excludes_file=excludes,
+                command_center_event_url="http://127.0.0.1:3000/api/command-center/events",
+            )
+
+            runner.configure_standing_review(args)
+
+            configured = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(configured["trusted_executor_sha"], fixture.sha)
+            self.assertEqual(configured["standing_policy_path"], str(policy.resolve()))
+            self.assertEqual(configured["repositories"][-1]["lane_id"], "season2-review-snapshots")
+            self.assertEqual(configured["command_center_event_url"], "http://127.0.0.1:3000/api/command-center/events")
+            self.assertEqual(excludes.read_text(encoding="utf-8"), ".agent-state/\n")
+            self.assertEqual(stat.S_IMODE(excludes.stat().st_mode), 0o600)
+
+            with self.assertRaisesRegex(runner.RunnerError, "already configured"):
+                runner.configure_standing_review(args)
+
+    def test_command_center_projection_records_every_directive_state_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            config = fixture.config()
+            policy = fixture.root / "standing-policy.json"
+            policy.write_text("{}\n", encoding="utf-8")
+            os.chmod(policy, 0o600)
+            ledger = fixture.root / "standing-ledger"
+            ledger.mkdir(mode=0o700)
+            config["standing_policy_path"] = str(policy)
+            config["standing_release_ledger"] = str(ledger)
+            config["command_center_event_url"] = "http://127.0.0.1:3000/api/command-center/events"
+            repository = {
+                "repository": "leeshsnu/treeXchange-season2",
+                "worktree": str(fixture.repository),
+                "queue_directory": ".agent-state/u2-queues",
+                "git_excludes_file": None,
+            }
+            projection = {
+                "status": "draft_paused",
+                "queue_id": "u2-user-command-center-review-01",
+                "origin": {"requested_assignee": "Claude", "intent": "design_review"},
+                "authorization_type": None,
+                "policy_id": None,
+                "approval_digest": "a" * 64,
+                "operations_reserved": 0,
+                "item_projections": [{
+                    "work_item_id": "UX-REVIEW-20260724",
+                    "role": "repository_reviewer",
+                    "task_profile": "design",
+                    "base_sha": "b" * 40,
+                    "target_sha": fixture.sha,
+                    "state": "planned",
+                    "attempts": 0,
+                    "verdict": None,
+                    "result_summary": None,
+                    "result_digest": None,
+                }],
+            }
+            delivered = []
+
+            def deliver(_url, _key, event):
+                delivered.append(event)
+                return True
+
+            runner.sync_command_center_progress(config, repository, projection, deliver=deliver)
+            runner.sync_command_center_progress(config, repository, projection, deliver=deliver)
+            self.assertEqual([event["payload"]["state"] for event in delivered], runner.DIRECTIVE_STATES[:5])
+
+            result_digest = "c" * 64
+            completed_projection = {
+                **projection,
+                "status": "released",
+                "authorization_type": "standing_policy",
+                "policy_id": "u2-user-review-policy-20260724",
+                "operations_reserved": 1,
+                "item_projections": [{
+                    **projection["item_projections"][0],
+                    "state": "completed",
+                    "attempts": 1,
+                    "verdict": "APPROVE",
+                    "result_summary": "실제 코드를 검토했습니다.",
+                    "result_digest": result_digest,
+                }],
+            }
+            runner.sync_command_center_progress(config, repository, completed_projection, deliver=deliver)
+            self.assertEqual([event["payload"]["state"] for event in delivered], runner.DIRECTIVE_STATES[:9])
+            self.assertNotIn("result", delivered[-1]["payload"])
+
+            adjudication = fixture.repository / ".agent-state/u2-adjudications/u2-user-command-center-review-01.json"
+            runner.save_private_json(adjudication, {
+                "schema_version": 1,
+                "queue_id": "u2-user-command-center-review-01",
+                "task_id": "UX-REVIEW-20260724",
+                "target_sha": fixture.sha,
+                "result_digest": result_digest,
+                "reviewer_family": "Codex",
+                "verdict": "ACCEPTED",
+                "summary": "Claude 결과의 코드 근거를 확인했습니다.",
+                "recorded_at": runner.utc_now(),
+            })
+            runner.sync_command_center_progress(config, repository, completed_projection, deliver=deliver)
+            self.assertEqual([event["payload"]["state"] for event in delivered], runner.DIRECTIVE_STATES)
+            self.assertEqual(delivered[-1]["payload"]["crosscheckVerdict"], "ACCEPTED")
+
+    def test_command_center_delivery_signs_the_exact_body(self):
+        event = {"id": "u2-progress-test-0001", "eventType": "DIRECTIVE_PROGRESS"}
+        key = "k" * 32
+
+        class Response:
+            status = 202
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return b'{"accepted":true}'
+
+        with mock.patch("urllib.request.urlopen", return_value=Response()) as opened:
+            self.assertTrue(runner.deliver_command_center_event(
+                "http://127.0.0.1:3000/api/command-center/events", key, event
+            ))
+        request = opened.call_args.args[0]
+        body = request.data.decode("utf-8")
+        timestamp = request.get_header("X-tx-timestamp")
+        nonce = request.get_header("X-tx-nonce")
+        expected = hmac.new(
+            key.encode("utf-8"),
+            f"u2-progress-v1.{timestamp}.{nonce}.{body}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        self.assertEqual(request.get_header("X-tx-signature"), f"sha256={expected}")
+        self.assertEqual(request.get_header("X-tx-key-id"), "u2-progress-v1")
+
+    def test_command_center_collision_checks_the_exact_event_not_a_recent_page(self):
+        expected = {
+            "id": "u2-progress-test-0001",
+            "eventType": "DIRECTIVE_PROGRESS",
+            "headSha": "a" * 40,
+            "payload": {"queueId": "queue-command-center-review-0001", "state": "DONE"},
+        }
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps({
+                    "found": True,
+                    "id": expected["id"],
+                    "eventType": "DIRECTIVE_PROGRESS",
+                    "headSha": expected["headSha"],
+                    "queueId": expected["payload"]["queueId"],
+                    "state": "DONE",
+                }).encode("utf-8")
+
+        with mock.patch("urllib.request.urlopen", return_value=Response()) as opened:
+            self.assertTrue(runner.command_center_event_exists(
+                "http://127.0.0.1:3000/api/command-center/events", expected
+            ))
+        self.assertIn("/api/command-center/event-status?id=", opened.call_args.args[0])
+
+    def test_command_center_uses_a_one_way_event_key_not_the_controller_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            config = fixture.config()
+            controller_key = runner.controller_key_text(config)
+            event_key = runner.command_center_key_text(config)
+            self.assertNotEqual(event_key, controller_key)
+            self.assertEqual(len(event_key), 64)
+            self.assertEqual(event_key, runner.command_center_key_text(config))
+
+    def test_codex_adjudication_is_bound_to_exact_result_and_written_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            config_path = fixture.root / "runner.json"
+            config_path.write_text(json.dumps(fixture.config()), encoding="utf-8")
+            os.chmod(config_path, 0o600)
+            queue = fixture.repository / ".agent-state/u2-queues/task.json"
+            queue.parent.mkdir(parents=True, exist_ok=True)
+            queue.write_text("{}\n", encoding="utf-8")
+            result_digest = "d" * 64
+            inspected = {
+                "queue_id": "u2-user-command-center-review-01",
+                "origin": {"requested_assignee": "Claude", "intent": "design_review"},
+                "authorization_type": "attended",
+                "approval_digest": "a" * 64,
+                "policy_id": None,
+                "operations_reserved": 1,
+                "item_projections": [{
+                    "work_item_id": "UX-REVIEW-20260724",
+                    "role": "repository_reviewer",
+                    "task_profile": "design",
+                    "base_sha": "b" * 40,
+                    "target_sha": fixture.sha,
+                    "state": "completed",
+                    "attempts": 1,
+                    "verdict": "APPROVE",
+                    "result_summary": "검토 완료",
+                    "result_digest": result_digest,
+                }],
+            }
+            args = argparse.Namespace(
+                config=config_path,
+                repository="leeshsnu/treeXchange-season2",
+                repo=fixture.repository,
+                queue=queue,
+                expected_target_sha=fixture.sha,
+                expected_result_digest=result_digest,
+                verdict="ACCEPTED",
+                summary="Claude 결과의 코드 근거를 확인했습니다.",
+            )
+            with mock.patch.object(runner, "ROOT", fixture.executor), \
+                 mock.patch.object(runner, "inspect_queue", return_value=inspected), \
+                 mock.patch.object(runner, "sync_command_center_progress"):
+                runner.record_codex_adjudication(args)
+                with self.assertRaisesRegex(runner.RunnerError, "already exists"):
+                    runner.record_codex_adjudication(args)
+            artifact = fixture.repository / ".agent-state/u2-adjudications/u2-user-command-center-review-01.json"
+            value = json.loads(artifact.read_text(encoding="utf-8"))
+            self.assertEqual(value["target_sha"], fixture.sha)
+            self.assertEqual(value["result_digest"], result_digest)
+            self.assertEqual(value["reviewer_family"], "Codex")
 
     def test_retry_and_cycle_caps_are_fixed(self):
         with tempfile.TemporaryDirectory() as directory:
