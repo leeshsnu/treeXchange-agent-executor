@@ -31,7 +31,9 @@ Codex는 Claude에게 배정된 결과를 먼저 작성하지 않는다. Codex�
    프로필, 일일 한도와 유효기간을 모두 포함할 때만 로컬 runner가 대기열을
    자동 해제한다.
 6. Claude는 스크린샷 요약이 아니라 제한된 저장소 도구로 실제 diff와 코드를
-   직접 읽는다. 소스 수정, Git, shell, 네트워크 도구는 없다.
+   직접 읽는다. diff는 고정 크기 조각으로 처음부터 끝까지 순서대로 읽어야
+   하며, 마지막 조각 전에는 검토 증명이 발급되지 않는다. 소스 수정, Git,
+   shell, 네트워크 도구는 없다.
 7. Claude의 원본 결과와 세션 식별자는 owner-only `.agent-state`에 남는다.
 8. Codex는 별도 결과로 사실관계와 우선순위를 교차검증한다. Claude 의견을
    Codex 의견으로 덮어쓰지 않는다.
@@ -56,7 +58,8 @@ Codex는 Claude에게 배정된 결과를 먼저 작성하지 않는다. Codex�
   별도 Head로 고정한다.
 - `scripts/u2_task_intake.py`: 작업 manifest를 검증하고 paused queue를 만든다.
   Reviewer의 실제 Base-to-Head 변경 파일이 서명된 diff 범위에서 하나라도
-  빠지면 모델 호출 전 intake에서 거부한다.
+  빠지거나, worker 보호 경로를 요청하거나, signed turn 안에 전체 diff를 읽을
+  수 없으면 모델 호출 전 intake에서 거부한다.
 - `scripts/u2_controller.py sign-standing-policy`: 사용자가 한 번 승인한 정확한
   정책 digest를 서명한다. 설치나 호출은 하지 않는다.
 - `scripts/u2_controller.py inspect-standing-policy-draft`: 서명 전 정책의 범위,
@@ -72,7 +75,9 @@ Codex는 Claude에게 배정된 결과를 먼저 작성하지 않는다. Codex�
   일방향 파생한 사건 전용 키로 로컬 Command Center에 서명 전송한다. 웹
   프로세스에는 원래 controller key를 주지 않으며, 이 키는
   `DIRECTIVE_PROGRESS` 외 사건에는 거부된다. 전송 실패는 다음 polling에서
-  사건만 다시 시도하며 Claude 모델 호출을 반복하지 않는다.
+  사건만 다시 시도하며 Claude 모델 호출을 반복하지 않는다. 모든 queue의
+  사건 시간은 하나의 외부 ledger에서 밀리초 단위로 항상 증가하게 기록해
+  같은 시각 충돌이나 이전 queue보다 과거인 사건을 만들지 않는다.
 - worker 시작 뒤 controller가 모델 결과 전에 실패하면 runner가 해당 시도를
   `FAILED` 결과로 기록한다. 같은 큐를 자동 재시도하지 않는다.
 - `upgrade-trusted-executor`는 기존 runner 설정 전체의 SHA-256과 이전 실행기

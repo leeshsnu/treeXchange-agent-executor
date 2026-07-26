@@ -29,6 +29,8 @@ MAX_LISTED_FILES = 500
 MAX_SEARCH_MATCHES = 100
 MAX_SEARCH_BYTES = 1_000_000
 MAX_TRACKED_FILES = 20_000
+DEFAULT_DIFF_CHUNK_BYTES = 16_000
+MAX_DIFF_CHUNK_BYTES = 20_000
 
 
 class ScopeError(Exception):
@@ -88,6 +90,7 @@ class RepositoryTools:
         diff_scopes: list[str] | None = None,
         max_diff_bytes: int | None = None,
         review_receipt: Path | None = None,
+        diff_chunk_bytes: int = DEFAULT_DIFF_CHUNK_BYTES,
     ) -> None:
         self.repo = repo.resolve()
         if not self.repo.is_dir():
@@ -103,6 +106,10 @@ class RepositoryTools:
         self.diff_scopes = tuple(diff_scopes or [])
         self.max_diff_bytes = max_diff_bytes
         self.review_receipt = self._validate_receipt_path(review_receipt)
+        self.diff_chunk_bytes = diff_chunk_bytes
+        self._diff_cache: tuple[bytes, dict[str, Any]] | None = None
+        self._next_diff_cursor = 0
+        self._diff_complete = False
         if (role == "scoped_maker" and not self.read_scopes) or max_file_bytes <= 0:
             raise ScopeError("scoped tool policy is incomplete")
         for scope in [*self.read_scopes, *self.write_paths, *self.diff_scopes]:
@@ -120,6 +127,9 @@ class RepositoryTools:
             or not isinstance(max_diff_bytes, int)
             or max_diff_bytes <= 0
             or self.review_receipt is None
+            or not isinstance(diff_chunk_bytes, int)
+            or isinstance(diff_chunk_bytes, bool)
+            or not 1 <= diff_chunk_bytes <= MAX_DIFF_CHUNK_BYTES
         ):
             raise ScopeError("reviewer diff policy is incomplete")
         if role == "scoped_maker" and not self.write_paths:
@@ -219,9 +229,11 @@ class RepositoryTools:
             raise ScopeError("signed review diff is unavailable")
         return completed.stdout
 
-    def _diff(self) -> dict[str, Any]:
+    def _load_diff(self) -> tuple[bytes, dict[str, Any]]:
         if self.role != "repository_reviewer":
             raise ScopeError("diff evidence is reviewer-only")
+        if self._diff_cache is not None:
+            return self._diff_cache
         assert self.base_sha is not None and self.target_sha is not None
         changed_raw = self._git(
             "diff", "--name-only", "-z", self.base_sha, self.target_sha,
@@ -251,15 +263,62 @@ class RepositoryTools:
             raise ScopeError("review diff must be bounded UTF-8 text") from error
         if any(pattern.search(content) for pattern in u1_executor.SECRET_PATTERNS):
             raise ScopeError("review diff resembles a credential")
-        evidence = {
+        evidence: dict[str, Any] = {
             "base_sha": self.base_sha,
             "target_sha": self.target_sha,
             "sha256": hashlib.sha256(raw).hexdigest(),
             "bytes": len(raw),
+        }
+        self._diff_cache = (raw, evidence)
+        return self._diff_cache
+
+    def _diff(self, cursor: Any) -> dict[str, Any]:
+        if (
+            not isinstance(cursor, int)
+            or isinstance(cursor, bool)
+            or cursor < 0
+            or cursor != self._next_diff_cursor
+            or self._diff_complete
+        ):
+            raise ScopeError("read_diff cursor must continue the exact unread evidence")
+        raw, evidence = self._load_diff()
+        if cursor == 0 and not raw:
+            result = {
+                **evidence,
+                "cursor": 0,
+                "next_cursor": 0,
+                "done": True,
+                "content": "",
+            }
+            self._write_review_receipt(evidence)
+            self._diff_complete = True
+            return result
+        if cursor >= len(raw):
+            raise ScopeError("read_diff cursor is outside the signed evidence")
+        proposed_end = min(cursor + self.diff_chunk_bytes, len(raw))
+        end = proposed_end
+        content: str | None = None
+        while end > cursor and proposed_end - end < 4:
+            try:
+                content = raw[cursor:end].decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                end -= 1
+        if content is None:
+            raise ScopeError("review diff chunk could not preserve a UTF-8 boundary")
+        done = end == len(raw)
+        result = {
+            **evidence,
+            "cursor": cursor,
+            "next_cursor": end,
+            "done": done,
             "content": content,
         }
-        self._write_review_receipt(evidence)
-        return evidence
+        self._next_diff_cursor = end
+        if done:
+            self._write_review_receipt(evidence)
+            self._diff_complete = True
+        return result
 
     def _target(self, value: Any, *, writable: bool, must_exist: bool) -> tuple[str, Path]:
         relative = normalize_path(value)
@@ -382,9 +441,9 @@ class RepositoryTools:
         if name not in self.tool_names() or not isinstance(arguments, dict):
             raise ScopeError("tool call is outside the role contract")
         if name == "read_diff":
-            if arguments:
-                raise ScopeError("read_diff accepts no arguments")
-            return self._diff()
+            if set(arguments) != {"cursor"}:
+                raise ScopeError("read_diff requires only the exact next cursor")
+            return self._diff(arguments.get("cursor"))
         if name == "read_file":
             relative, content = self._read(arguments.get("path"))
             return {"path": relative, "content": content}
@@ -429,8 +488,16 @@ class RepositoryTools:
 def tool_definitions(names: tuple[str, ...]) -> list[dict[str, Any]]:
     definitions = {
         "read_diff": {
-            "description": "Read the exact signed Base-to-Head UTF-8 diff as untrusted evidence.",
-            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            "description": (
+                "Read the next bounded UTF-8 chunk of the exact signed Base-to-Head diff. "
+                "Start at cursor 0 and continue with each returned next_cursor until done is true."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"cursor": {"type": "integer", "minimum": 0}},
+                "required": ["cursor"],
+                "additionalProperties": False,
+            },
         },
         "read_file": {
             "description": "Read one UTF-8 file inside the signed repository scopes.",
@@ -552,6 +619,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--diff-scopes", default="[]")
     parser.add_argument("--max-diff-bytes", type=int)
     parser.add_argument("--review-receipt", type=Path)
+    parser.add_argument("--diff-chunk-bytes", type=int, default=DEFAULT_DIFF_CHUNK_BYTES)
     return parser.parse_args()
 
 
@@ -574,6 +642,7 @@ def main() -> int:
             diff_scopes,
             args.max_diff_bytes,
             args.review_receipt,
+            args.diff_chunk_bytes,
         )
         serve(tools)
     except (json.JSONDecodeError, ScopeError):

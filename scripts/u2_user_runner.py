@@ -467,13 +467,63 @@ DIRECTIVE_SUMMARIES = {
 def load_projection_ledger(state: Path) -> dict[str, Any]:
     path = state / "command-center-events.json"
     if not path.exists():
-        return {"schema_version": 1, "delivered": {}}
+        return {"schema_version": 2, "delivered": {}, "last_occurred_at": None}
     value = load_private_json(path, "Command Center event ledger")
-    if set(value) != {"schema_version", "delivered"} or value.get("schema_version") != 1:
+    if set(value) == {"schema_version", "delivered"} and value.get("schema_version") == 1:
+        delivered_at: list[dt.datetime] = []
+        if isinstance(value.get("delivered"), dict):
+            for entry in value["delivered"].values():
+                timestamp = entry.get("delivered_at") if isinstance(entry, dict) else None
+                if not isinstance(timestamp, str):
+                    continue
+                try:
+                    parsed = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if parsed.tzinfo is not None and parsed.utcoffset() == dt.timedelta(0):
+                    delivered_at.append(parsed)
+        migrated_last = (
+            max(delivered_at).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            if delivered_at
+            else None
+        )
+        value = {
+            "schema_version": 2,
+            "delivered": value["delivered"],
+            "last_occurred_at": migrated_last,
+        }
+    if (
+        set(value) != {"schema_version", "delivered", "last_occurred_at"}
+        or value.get("schema_version") != 2
+    ):
         fail("Command Center event ledger contract drifted", INVALID)
     if not isinstance(value.get("delivered"), dict):
         fail("Command Center event ledger is invalid", INVALID)
+    last = value.get("last_occurred_at")
+    if last is not None:
+        if not isinstance(last, str):
+            fail("Command Center event ledger timestamp is invalid", INVALID)
+        try:
+            parsed = dt.datetime.fromisoformat(last.replace("Z", "+00:00"))
+        except ValueError:
+            fail("Command Center event ledger timestamp is invalid", INVALID)
+        if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
+            fail("Command Center event ledger timestamp is invalid", INVALID)
     return value
+
+
+def next_projection_occurred_at(ledger: dict[str, Any]) -> str:
+    current_ms = int(time.time() * 1000)
+    last = ledger.get("last_occurred_at")
+    if isinstance(last, str):
+        parsed = dt.datetime.fromisoformat(last.replace("Z", "+00:00"))
+        last_ms = int(parsed.timestamp() * 1000)
+        current_ms = max(current_ms, last_ms + 1)
+    return (
+        dt.datetime.fromtimestamp(current_ms / 1000, tz=dt.timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def controller_key_text(config: dict[str, Any]) -> str:
@@ -683,7 +733,6 @@ def sync_command_center_progress(
     state_directory = private_state_directory(config)
     ledger = load_projection_ledger(state_directory)
     key = command_center_key_text(config)
-    batch_started_at = dt.datetime.now(dt.timezone.utc)
     for index, state in enumerate(DIRECTIVE_STATES[: desired + 1]):
         event_id = directive_event_id(projection["queue_id"], state)
         if event_id in ledger["delivered"]:
@@ -692,12 +741,11 @@ def sync_command_center_progress(
         has_policy = index >= DIRECTIVE_STATES.index("POLICY_CHECKED")
         has_result = index >= DIRECTIVE_STATES.index("RESULT_RECORDED")
         has_crosscheck = index >= DIRECTIVE_STATES.index("OTHER_FAMILY_CHECKED")
+        occurred_at = next_projection_occurred_at(ledger)
         event_value = {
             "id": event_id,
             "eventType": "DIRECTIVE_PROGRESS",
-            "occurredAt": (
-                batch_started_at + dt.timedelta(microseconds=index)
-            ).isoformat().replace("+00:00", "Z"),
+            "occurredAt": occurred_at,
             "programId": "OPS",
             "workItemId": None,
             "actorFamily": "Controller",
@@ -730,6 +778,7 @@ def sync_command_center_progress(
         if not deliver(url, key, event_value):
             return
         ledger["delivered"][event_id] = {"delivered_at": utc_now(), "state": state}
+        ledger["last_occurred_at"] = occurred_at
         save_private_json(state_directory / "command-center-events.json", ledger)
 
 

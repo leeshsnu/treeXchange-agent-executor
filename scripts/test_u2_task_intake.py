@@ -153,5 +153,26 @@ class U2TaskIntakeTests(unittest.TestCase):
             with self.assertRaisesRegex(intake.IntakeError, "outside allowed_paths"):
                 intake.validate_manifest(fixture.repo, value)
 
+    def test_intake_rejects_worker_protected_read_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            value = fixture.manifest()
+            value["item"]["read_paths"] = ["ops/**"]
+            with self.assertRaisesRegex(intake.IntakeError, "worker-protected"):
+                intake.validate_manifest(fixture.repo, value)
+
+    def test_intake_rejects_diff_too_large_for_signed_turn_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            source = fixture.repo / "apps/ops-dashboard/app/page.tsx"
+            source.write_text("export default `" + ("x" * 70_000) + "`;\n", encoding="utf-8")
+            git(fixture.repo, "add", ".")
+            git(fixture.repo, "commit", "-m", "oversized snapshot")
+            value = fixture.manifest()
+            value["item"]["target_sha"] = git(fixture.repo, "rev-parse", "HEAD")
+            value["item"]["maximum_turns"] = 4
+            with self.assertRaisesRegex(intake.IntakeError, "evidence budget"):
+                intake.validate_manifest(fixture.repo, value)
+
 if __name__ == "__main__":
     unittest.main()

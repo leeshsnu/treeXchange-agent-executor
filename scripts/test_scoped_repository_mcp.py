@@ -85,7 +85,7 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def reviewer(self):
+    def reviewer(self, *, chunk_bytes=mcp.DEFAULT_DIFF_CHUNK_BYTES):
         receipt = self.repo / ".agent-state" / f"receipt-{uuid.uuid4().hex}.json"
         return mcp.RepositoryTools(
             self.repo,
@@ -98,6 +98,7 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
             ["services/model/HANDOFF.md", "config/policy.json"],
             100_000,
             receipt,
+            chunk_bytes,
         )
 
     def maker(self):
@@ -121,25 +122,45 @@ class ScopedRepositoryMcpTests(unittest.TestCase):
         self.assertEqual(matches[0]["path"], "services/model/README.md")
 
     def test_reviewer_reads_exact_signed_diff_only_through_review_tool(self):
-        tools = self.reviewer()
-        evidence = tools.call("read_diff", {})
+        tools = self.reviewer(chunk_bytes=16)
+        cursor = 0
+        content = []
+        evidences = []
+        while True:
+            evidence = tools.call("read_diff", {"cursor": cursor})
+            evidences.append(evidence)
+            content.append(evidence["content"])
+            self.assertEqual(evidence["cursor"], cursor)
+            cursor = evidence["next_cursor"]
+            if evidence["done"]:
+                break
+            self.assertFalse(tools.review_receipt.exists())
         canonical = mcp.bridge.bounded_diff(self.repo, self.base, self.head)
         self.assertEqual(evidence["base_sha"], self.base)
         self.assertEqual(evidence["target_sha"], self.head)
-        self.assertEqual(evidence["content"], canonical)
-        self.assertIn("+reviewed", evidence["content"])
-        self.assertIn('"mode":"reviewed"', evidence["content"])
+        self.assertEqual("".join(content), canonical)
+        self.assertIn("+reviewed", "".join(content))
+        self.assertIn('"mode":"reviewed"', "".join(content))
         self.assertRegex(evidence["sha256"], r"^[0-9a-f]{64}$")
-        self.assertEqual(evidence["bytes"], len(evidence["content"].encode()))
+        self.assertEqual(evidence["bytes"], len(canonical.encode()))
+        self.assertGreater(len(evidences), 1)
         receipt = tools.review_receipt
         self.assertIsNotNone(receipt)
         self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
         recorded = json.loads(receipt.read_text(encoding="utf-8"))
         self.assertEqual(recorded["sha256"], evidence["sha256"])
-        with self.assertRaisesRegex(mcp.ScopeError, "receipt"):
-            tools.call("read_diff", {})
+        with self.assertRaisesRegex(mcp.ScopeError, "cursor"):
+            tools.call("read_diff", {"cursor": cursor})
         with self.assertRaises(mcp.ScopeError):
-            self.maker().call("read_diff", {})
+            self.maker().call("read_diff", {"cursor": 0})
+
+    def test_reviewer_diff_chunks_cannot_be_skipped_or_replayed(self):
+        tools = self.reviewer(chunk_bytes=16)
+        first = tools.call("read_diff", {"cursor": 0})
+        self.assertFalse(first["done"])
+        with self.assertRaisesRegex(mcp.ScopeError, "cursor"):
+            tools.call("read_diff", {"cursor": 0})
+        self.assertFalse(tools.review_receipt.exists())
 
     def test_untracked_local_file_inside_scope_is_denied(self):
         local = self.repo / "services/model/local-notes.txt"
