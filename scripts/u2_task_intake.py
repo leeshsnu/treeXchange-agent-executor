@@ -102,6 +102,42 @@ def require_exact_repository_state(repo: Path, manifest: dict[str, Any]) -> None
         fail("task manifest Base is not an ancestor of Head", INVALID)
 
 
+def require_reviewer_diff_scope(repo: Path, item: dict[str, Any]) -> None:
+    completed = subprocess.run(
+        [
+            "git", "diff", "--name-only", "-z",
+            item["base_sha"], item["target_sha"], "--", ".",
+            bridge.REVIEW_ARTIFACT_PATHSPEC,
+        ],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        fail("task intake could not enumerate the exact review diff")
+    try:
+        changed = [
+            value for value in completed.stdout.decode("utf-8").split("\0") if value
+        ]
+    except UnicodeDecodeError:
+        fail("task intake review paths must be UTF-8", INVALID)
+    if not changed:
+        fail("task intake review range contains no bounded diff", INVALID)
+    outside = [
+        path
+        for path in changed
+        if not worker.any_scope_matches(path, item["allowed_paths"])
+    ]
+    if outside:
+        fail(
+            "task intake review diff contains paths outside allowed_paths: "
+            + ", ".join(outside[:5]),
+            INVALID,
+        )
+
+
 def validate_manifest(repo: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     if not controller.QUEUE_ID_RE.fullmatch(manifest.get("queue_id", "")):
         fail("task manifest queue id is invalid", INVALID)
@@ -164,6 +200,8 @@ def validate_manifest(repo: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     except controller.ControllerError as error:
         fail(str(error), error.code)
     require_exact_repository_state(repo, manifest)
+    if role == "repository_reviewer":
+        require_reviewer_diff_scope(repo, item)
     return queue
 
 

@@ -464,6 +464,71 @@ class U2UserRunnerTests(unittest.TestCase):
             self.assertEqual([event["payload"]["state"] for event in delivered], runner.DIRECTIVE_STATES)
             self.assertEqual(delivered[-1]["payload"]["crosscheckVerdict"], "ACCEPTED")
 
+    def test_pre_model_controller_failure_is_projected_without_a_model_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            config = fixture.config()
+            policy = fixture.root / "standing-policy.json"
+            policy.write_text("{}\n", encoding="utf-8")
+            os.chmod(policy, 0o600)
+            ledger = fixture.root / "standing-ledger"
+            ledger.mkdir(mode=0o700)
+            config.update({
+                "standing_policy_path": str(policy),
+                "standing_release_ledger": str(ledger),
+                "command_center_event_url": "http://127.0.0.1:3000/api/command-center/events",
+            })
+            repository = {
+                "repository": "leeshsnu/treeXchange-season2",
+                "worktree": str(fixture.repository),
+                "queue_directory": ".agent-state/u2-queues",
+                "git_excludes_file": None,
+            }
+            inspected = {
+                "queue_id": "u2-user-command-center-failed-01",
+                "origin": {"requested_assignee": "Claude", "intent": "design_review"},
+                "authorization_type": "standing_policy",
+                "policy_id": "u2-user-review-policy-20260724",
+                "approval_digest": "a" * 64,
+                "operations_reserved": 0,
+                "item_projections": [{
+                    "work_item_id": "UX-REVIEW-FAILED-01",
+                    "role": "repository_reviewer",
+                    "task_profile": "design",
+                    "base_sha": "b" * 40,
+                    "target_sha": fixture.sha,
+                    "state": "planned",
+                    "attempts": 0,
+                    "verdict": None,
+                    "result_summary": None,
+                    "result_digest": None,
+                }],
+            }
+            delivered = []
+
+            def deliver(_url, _key, event):
+                delivered.append(event)
+                return True
+
+            runner.sync_command_center_progress(
+                config, repository, inspected, worker_started=True, deliver=deliver
+            )
+            runner.sync_command_center_progress(
+                config,
+                repository,
+                inspected,
+                execution_failure="controller_exit_78",
+                deliver=deliver,
+            )
+
+            self.assertEqual(
+                [event["payload"]["state"] for event in delivered],
+                runner.DIRECTIVE_STATES[:9],
+            )
+            self.assertEqual(delivered[-1]["payload"]["workerVerdict"], "FAILED")
+            self.assertIn("controller_exit_78", delivered[-1]["payload"]["resultSummary"])
+            self.assertRegex(delivered[-1]["payload"]["resultDigest"], r"^[0-9a-f]{64}$")
+
     def test_command_center_delivery_signs_the_exact_body(self):
         event = {"id": "u2-progress-test-0001", "eventType": "DIRECTIVE_PROGRESS"}
         key = "k" * 32
@@ -589,6 +654,53 @@ class U2UserRunnerTests(unittest.TestCase):
             self.assertEqual(value["result_digest"], result_digest)
             self.assertEqual(value["reviewer_family"], "Codex")
 
+    def test_trusted_executor_upgrade_changes_only_the_pinned_sha(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = UserRunnerFixture(directory)
+            policy = fixture.root / "standing-policy.json"
+            policy.write_text("{}\n", encoding="utf-8")
+            os.chmod(policy, 0o600)
+            ledger = fixture.root / "standing-ledger"
+            ledger.mkdir(mode=0o700)
+            value = fixture.config()
+            value.update({
+                "standing_policy_path": str(policy),
+                "standing_release_ledger": str(ledger),
+            })
+            config_path = fixture.root / "runner.json"
+            runner.save_private_json(config_path, value)
+            expected_config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+            (fixture.executor / "README.md").write_text("upgrade\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=fixture.executor, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "upgrade"],
+                cwd=fixture.executor,
+                check=True,
+                capture_output=True,
+            )
+            upgraded_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=fixture.executor,
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+            args = argparse.Namespace(
+                config=config_path,
+                expected_current_sha=fixture.sha,
+                trusted_executor_sha=upgraded_sha,
+                expected_config_sha256=expected_config_sha256,
+            )
+
+            runner.upgrade_trusted_executor(args)
+
+            upgraded = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(upgraded["trusted_executor_sha"], upgraded_sha)
+            self.assertEqual(upgraded["standing_policy_path"], str(policy))
+            self.assertEqual(upgraded["repositories"], value["repositories"])
+            with self.assertRaisesRegex(runner.RunnerError, "config changed"):
+                runner.upgrade_trusted_executor(args)
+
     def test_retry_and_cycle_caps_are_fixed(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = UserRunnerFixture(directory)
@@ -681,12 +793,19 @@ class U2UserRunnerTests(unittest.TestCase):
                 run_calls += 1
                 return completed(returncode=77)
 
-            with mock.patch.object(runner, "ROOT", fixture.executor):
+            with mock.patch.object(runner, "ROOT", fixture.executor), \
+                 mock.patch.object(runner, "sync_command_center_progress") as sync:
                 first = runner.run_cycle(fixture.config(), command=command)
                 second = runner.run_cycle(fixture.config(), command=command)
             self.assertEqual(first["outcome"], "controller_exit_77")
             self.assertEqual(second, {"status": "IDLE", "attempted": False})
             self.assertEqual(run_calls, 1)
+            failure_calls = [
+                call
+                for call in sync.call_args_list
+                if call.kwargs.get("execution_failure") == "controller_exit_77"
+            ]
+            self.assertEqual(len(failure_calls), 1)
 
     def test_environment_excludes_api_keys_and_private_approval_key(self):
         with tempfile.TemporaryDirectory() as directory:

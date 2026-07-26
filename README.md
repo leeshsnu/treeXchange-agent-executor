@@ -325,6 +325,13 @@ orchestration ledger. Failed projection retries metadata only and never retries
 a model call. Collision recovery queries the exact event id instead of relying
 on the dashboard's bounded recent-history page.
 
+Task intake enumerates the exact Base-to-Head changed paths before it creates a
+queue and rejects a Reviewer manifest whose signed diff scopes miss even one
+changed path. A controller failure after worker start but before a model result
+is projected as a deterministic `FAILED` result and is never retried. Later
+executor-only hardening uses `upgrade-trusted-executor`, which requires the
+exact prior config digest and changes only the pinned executor SHA.
+
 `u2_user_runner.py record-codex-adjudication` binds Codex's later cross-check to
 the exact Claude result digest and reviewed Head. The runner emits `DONE` only
 after that separate adjudication says `ACCEPTED`; Claude's full private output

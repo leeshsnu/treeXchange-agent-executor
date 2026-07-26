@@ -637,6 +637,7 @@ def sync_command_center_progress(
     inspected: dict[str, Any] | None,
     *,
     worker_started: bool = False,
+    execution_failure: str | None = None,
     deliver: Callable[[str, str, dict[str, Any]], bool] = deliver_command_center_event,
 ) -> None:
     url = config.get("command_center_event_url")
@@ -645,6 +646,21 @@ def sync_command_center_progress(
     projection = directive_projection(inspected)
     if projection is None:
         return
+    if execution_failure is not None and projection["item_state"] not in {
+        "completed", "changes_requested", "failed"
+    }:
+        projection["item_state"] = "failed"
+        projection["worker_verdict"] = "FAILED"
+        projection["result_summary"] = (
+            "담당 AI 작업은 모델 결과가 만들어지기 전에 안전하게 차단되었습니다. "
+            f"실행 상태: {execution_failure}."
+        )
+        projection["result_digest"] = hashlib.sha256(
+            (
+                f"{projection['queue_id']}\0{projection['task_id']}\0"
+                f"{projection['target_sha']}\0{execution_failure}"
+            ).encode("utf-8")
+        ).hexdigest()
     desired = 4
     if projection["policy_id"] is not None:
         desired = 6
@@ -986,6 +1002,16 @@ def run_cycle(
             repository["repository"], queue, digest, work_item_id
         )
         if key in ledger["attempts"]:
+            prior_status = ledger["attempts"][key].get("status")
+            if isinstance(prior_status, str) and prior_status.startswith(
+                "controller_exit_"
+            ):
+                sync_command_center_progress(
+                    config,
+                    repository,
+                    inspected,
+                    execution_failure=prior_status,
+                )
             continue
         ledger["attempts"][key] = {
             "at": utc_now(),
@@ -1024,7 +1050,10 @@ def run_cycle(
         save_private_json(state_directory / "attempts.json", ledger)
         if config.get("command_center_event_url") is not None:
             sync_command_center_progress(
-                config, repository, inspect_queue(config, repository, queue, command)
+                config,
+                repository,
+                inspect_queue(config, repository, queue, command),
+                execution_failure=outcome if completed.returncode != 0 else None,
             )
         return {
             "status": "ATTEMPT_FINISHED",
@@ -1227,6 +1256,35 @@ def configure_standing_review(args: argparse.Namespace) -> None:
     )
 
 
+def upgrade_trusted_executor(args: argparse.Namespace) -> None:
+    config_path = args.config.expanduser().resolve()
+    raw_config = private_file_bytes(config_path, "U2 user-runner config")
+    actual_config_digest = hashlib.sha256(raw_config).hexdigest()
+    if not hmac.compare_digest(actual_config_digest, args.expected_config_sha256):
+        fail("runner config changed after the approved upgrade plan")
+    config = load_config(config_path)
+    if config["status"] != "active":
+        fail("executor upgrade requires an active user runner")
+    if config["trusted_executor_sha"] != args.expected_current_sha:
+        fail("runner trusted SHA changed after the approved upgrade plan")
+    if config.get("standing_policy_path") is None:
+        fail("standing review must be configured before executor-only upgrade")
+    if exact_executor_sha(config) != args.trusted_executor_sha:
+        fail("new trusted executor SHA is not the exact installed executor Head")
+    updated = {**config, "trusted_executor_sha": args.trusted_executor_sha}
+    validate_config(updated)
+    save_private_json(config_path, updated)
+    print_event(
+        {
+            "status": "TRUSTED_EXECUTOR_UPGRADED_NOT_RESTARTED",
+            "previous_sha": args.expected_current_sha,
+            "trusted_executor_sha": args.trusted_executor_sha,
+            "standing_policy_path": updated["standing_policy_path"],
+            "automatic_retries": 0,
+        }
+    )
+
+
 def record_codex_adjudication(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     if config["status"] != "active":
@@ -1363,6 +1421,12 @@ def parser() -> argparse.ArgumentParser:
         default="http://127.0.0.1:3000/api/command-center/events",
     )
     configure.set_defaults(handler=configure_standing_review)
+    upgrade = subparsers.add_parser("upgrade-trusted-executor")
+    upgrade.add_argument("--config", type=Path, required=True)
+    upgrade.add_argument("--expected-current-sha", required=True)
+    upgrade.add_argument("--trusted-executor-sha", required=True)
+    upgrade.add_argument("--expected-config-sha256", required=True)
+    upgrade.set_defaults(handler=upgrade_trusted_executor)
     adjudicate = subparsers.add_parser("record-codex-adjudication")
     adjudicate.add_argument("--config", type=Path, required=True)
     adjudicate.add_argument("--repository", default="leeshsnu/treeXchange-season2", choices=sorted(ALLOWED_REPOSITORIES))
