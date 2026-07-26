@@ -55,6 +55,8 @@ Codex는 Claude에게 배정된 결과를 먼저 작성하지 않는다. Codex�
 - `scripts/create-review-snapshot.py` (Season 2): 수정 중인 실제 코드를 안전한
   별도 Head로 고정한다.
 - `scripts/u2_task_intake.py`: 작업 manifest를 검증하고 paused queue를 만든다.
+  Reviewer의 실제 Base-to-Head 변경 파일이 서명된 diff 범위에서 하나라도
+  빠지면 모델 호출 전 intake에서 거부한다.
 - `scripts/u2_controller.py sign-standing-policy`: 사용자가 한 번 승인한 정확한
   정책 digest를 서명한다. 설치나 호출은 하지 않는다.
 - `scripts/u2_controller.py inspect-standing-policy-draft`: 서명 전 정책의 범위,
@@ -71,6 +73,10 @@ Codex는 Claude에게 배정된 결과를 먼저 작성하지 않는다. Codex�
   프로세스에는 원래 controller key를 주지 않으며, 이 키는
   `DIRECTIVE_PROGRESS` 외 사건에는 거부된다. 전송 실패는 다음 polling에서
   사건만 다시 시도하며 Claude 모델 호출을 반복하지 않는다.
+- worker 시작 뒤 controller가 모델 결과 전에 실패하면 runner가 해당 시도를
+  `FAILED` 결과로 기록한다. 같은 큐를 자동 재시도하지 않는다.
+- `upgrade-trusted-executor`는 기존 runner 설정 전체의 SHA-256과 이전 실행기
+  SHA를 확인하고, 다른 정책·저장소·한도는 보존한 채 실행기 SHA만 갱신한다.
 - `record-codex-adjudication`은 Claude 결과 digest와 Head가 그대로일 때만
   Codex 교차검증을 별도 기록한다. `ACCEPTED`일 때만 최종 `DONE`이 표시된다.
 - `scripts/u2_controller.py run-next`: Claude 결과를 요청·검증·기록한다.

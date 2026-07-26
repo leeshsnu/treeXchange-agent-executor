@@ -145,6 +145,13 @@ class U2TaskIntakeTests(unittest.TestCase):
             with self.assertRaisesRegex(intake.IntakeError, "scoped snapshot first"):
                 intake.validate_manifest(fixture.repo, fixture.manifest())
 
+    def test_intake_rejects_changed_paths_outside_the_signed_review_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            value = fixture.manifest()
+            value["item"]["allowed_paths"] = ["docs/governance/**"]
+            with self.assertRaisesRegex(intake.IntakeError, "outside allowed_paths"):
+                intake.validate_manifest(fixture.repo, value)
 
 if __name__ == "__main__":
     unittest.main()
