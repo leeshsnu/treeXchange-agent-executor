@@ -109,7 +109,7 @@ range from one of the two allowlisted treeXchange repositories. The bridge:
   model review of the same diff. One independent review per approved model is
   allowed for cross-model validation. Calls are bounded to 12 per work-item
   review window, 2 new windows per
-  work item per UTC day, and 24 calls per repository per UTC day. Reaching a
+  work item per UTC day, and 48 calls per repository per UTC day. Reaching a
   cap pauses only that review lane; it is not a Claude subscription limit.
 
 This bridge proves real Codex-to-Claude invocation before the unattended GitHub
@@ -303,7 +303,10 @@ queue or invoke Claude. The manifest contract is
 An optional one-time signed standing policy can release recurring read-only
 Reviewer tasks without asking the user to approve every queue digest. It can
 cover only explicit user directives, one Reviewer call per task, configured
-read roots, selected profiles, a numeric UTC daily cap and a fixed expiry. It
+read roots, selected profiles, a numeric UTC daily cap of at most 48 calls and
+a fixed expiry. The controller reports a soft warning after 24 calls and counts
+all reservations made on the same UTC date even when the signed policy is
+rotated, so replacing a policy cannot reset the day's usage. It
 cannot authorize Maker work, retries, source or Git writes, merge, deployment or
 external actions. The user-owned runner records the release attempt before the
 controller call, and a controller-signed exact queue release plus an external

@@ -37,7 +37,7 @@
       "uniqueItems": true, "items": { "type": "string", "minLength": 1 }
     },
     "maximum_calls_per_task": { "const": 1 },
-    "maximum_calls_per_utc_day": { "type": "integer", "minimum": 1, "maximum": 24 },
+    "maximum_calls_per_utc_day": { "type": "integer", "minimum": 1, "maximum": 48 },
     "maximum_turns": { "type": "integer", "minimum": 1, "maximum": 8 },
     "automatic_retries": { "const": 0 },
     "policy_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },

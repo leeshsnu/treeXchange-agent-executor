@@ -176,11 +176,13 @@ def paused_user_review_queue(repository: ReviewRepository) -> dict:
     return value
 
 
-def signed_standing_policy(repository: ReviewRepository, *, daily: int = 3) -> dict:
+def signed_standing_policy(
+    repository: ReviewRepository, *, daily: int = 3, policy_id: str = "u2-user-review-policy-01"
+) -> dict:
     now = dt.datetime.now(dt.timezone.utc)
     value = {
         "schema_version": 1,
-        "policy_id": "u2-user-review-policy-01",
+        "policy_id": policy_id,
         "status": "active",
         "approval_key_id": "u2-attended-approval-v1",
         "approved_by": "user",
@@ -280,7 +282,19 @@ class U2ControllerTests(unittest.TestCase):
             self.assertEqual(result["status"], "VALID_UNSIGNED_STANDING_POLICY_NOT_ACTIVE")
             self.assertEqual(result["policy_digest"], signed["policy_digest"])
             self.assertEqual(result["maximum_calls_per_utc_day"], 12)
+            self.assertEqual(result["daily_warning_threshold"], 24)
             self.assertEqual(result["automatic_retries"], 0)
+
+    def test_standing_policy_accepts_48_calls_but_rejects_49(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ReviewRepository(directory)
+            controller.validate_standing_policy(
+                signed_standing_policy(repository, daily=48)
+            )
+            with self.assertRaisesRegex(controller.ControllerError, "between one and 48"):
+                controller.validate_standing_policy(
+                    signed_standing_policy(repository, daily=49)
+                )
 
     def test_signed_standing_policy_releases_only_one_explicit_read_only_task(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -350,6 +364,31 @@ class U2ControllerTests(unittest.TestCase):
             changed["queue_id"] = "u2-controller-test-02"
             with self.assertRaisesRegex(controller.ControllerError, "daily release cap"):
                 controller.reserve_standing_release(repository.root, ledger, policy, changed, now)
+
+    def test_standing_policy_rotation_does_not_reset_the_daily_ledger(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo_path = root / "repo"
+            repo_path.mkdir()
+            repository = ReviewRepository(str(repo_path))
+            queue = paused_user_review_queue(repository)
+            ledger = root / "standing-ledger"
+            ledger.mkdir(mode=0o700)
+            now = dt.datetime.now(dt.timezone.utc)
+            first = signed_standing_policy(
+                repository, daily=1, policy_id="u2-user-review-policy-first"
+            )
+            second = signed_standing_policy(
+                repository, daily=1, policy_id="u2-user-review-policy-second"
+            )
+
+            controller.reserve_standing_release(
+                repository.root, ledger, first, queue, now
+            )
+            with self.assertRaisesRegex(controller.ControllerError, "daily release cap"):
+                controller.reserve_standing_release(
+                    repository.root, ledger, second, queue, now
+                )
 
     def test_paused_queue_is_inspectable_but_contains_no_execution_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
