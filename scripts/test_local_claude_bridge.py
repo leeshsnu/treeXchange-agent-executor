@@ -498,10 +498,10 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, "daily review-window"):
                 bridge.reserve_attempt(ledger, ledger_attempt(3, window="ops-03-window-03"))
 
-    def test_repository_daily_cap_is_twenty_four_calls(self):
+    def test_repository_daily_cap_is_forty_eight_calls(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Path(directory) / ".agent-state" / "ledger.json"
-            for index in range(24):
+            for index in range(48):
                 bridge.reserve_attempt(
                     ledger,
                     ledger_attempt(
@@ -513,7 +513,7 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, "repository daily"):
                 bridge.reserve_attempt(
                     ledger,
-                    ledger_attempt(30, work_item="TASK-30", window="task-30-window-01"),
+                    ledger_attempt(50, work_item="TASK-50", window="task-50-window-01"),
                 )
 
     def test_repository_identity_is_allowlisted(self):

@@ -84,6 +84,8 @@ STANDING_POLICY_FIELDS = {
     "signature",
 }
 ED25519_SIGNATURE_RE = re.compile(r"^[A-Za-z0-9+/]{86}==$")
+STANDING_POLICY_DAILY_WARNING = 24
+STANDING_POLICY_DAILY_MAXIMUM = 48
 ITEM_FIELDS = {
     "work_item_id",
     "state",
@@ -219,8 +221,16 @@ def validate_standing_policy(value: Any) -> None:
     if value.get("maximum_calls_per_task") != 1:
         fail("U2 standing policy must remain one call per task", INVALID)
     daily = value.get("maximum_calls_per_utc_day")
-    if not isinstance(daily, int) or isinstance(daily, bool) or not 1 <= daily <= 24:
-        fail("U2 standing policy daily call cap must be between one and 24", INVALID)
+    if (
+        not isinstance(daily, int)
+        or isinstance(daily, bool)
+        or not 1 <= daily <= STANDING_POLICY_DAILY_MAXIMUM
+    ):
+        fail(
+            "U2 standing policy daily call cap must be between one and "
+            f"{STANDING_POLICY_DAILY_MAXIMUM}",
+            INVALID,
+        )
     turns = value.get("maximum_turns")
     if not isinstance(turns, int) or isinstance(turns, bool) or not 1 <= turns <= 8:
         fail("U2 standing policy turn cap must be between one and eight", INVALID)
@@ -1262,6 +1272,7 @@ def inspect_standing_policy_draft(args: argparse.Namespace) -> None:
                 "allowed_profiles": policy["allowed_profiles"],
                 "allowed_read_roots": policy["allowed_read_roots"],
                 "maximum_calls_per_utc_day": policy["maximum_calls_per_utc_day"],
+                "daily_warning_threshold": STANDING_POLICY_DAILY_WARNING,
                 "maximum_turns": policy["maximum_turns"],
                 "expires_at": policy["expires_at"],
                 "automatic_retries": policy["automatic_retries"],
@@ -1303,7 +1314,7 @@ def sign_standing_policy(args: argparse.Namespace) -> None:
 
 def reserve_standing_release(
     repo: Path, directory: Path, policy: dict[str, Any], queue: dict[str, Any], now: dt.datetime
-) -> None:
+) -> int:
     root = external_owner_directory(repo, directory, "U2 standing-release ledger")
     day = now.date().isoformat()
     prefix = f"{policy['policy_id']}-{day}-"
@@ -1311,7 +1322,22 @@ def reserve_standing_release(
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        used = sum(1 for path in root.glob(f"{prefix}*.json") if path.is_file())
+        used = 0
+        for path in root.glob("*.json"):
+            reservation = owner_only_json(path, "U2 standing-release reservation")
+            if set(reservation) != {
+                "schema_version",
+                "policy_id",
+                "policy_digest",
+                "queue_id",
+                "queue_digest",
+                "reserved_at",
+            } or reservation.get("schema_version") != 1:
+                fail("U2 standing-release reservation contract drifted", INVALID)
+            if parse_utc(
+                reservation.get("reserved_at"), "standing_release.reserved_at"
+            ).date() == now.date():
+                used += 1
         if used >= policy["maximum_calls_per_utc_day"]:
             fail("U2 standing-policy daily release cap has been reached")
         identity = hashlib.sha256(
@@ -1331,6 +1357,7 @@ def reserve_standing_release(
             },
             "U2 standing-release reservation",
         )
+        return used + 1
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
@@ -1365,7 +1392,9 @@ def release_under_standing_policy(args: argparse.Namespace) -> None:
         if bridge.repository_identity(repo) != queue["repository"]:
             fail("U2 queue repository does not match the standing-policy worktree")
         policy_allows_queue(policy, queue)
-        reserve_standing_release(repo, args.ledger, policy, queue, current)
+        daily_release_count = reserve_standing_release(
+            repo, args.ledger, policy, queue, current
+        )
         digest = approval_digest(queue)
         expires = min(policy_expiry, current + dt.timedelta(hours=24))
         release_id = f"standing-{policy['policy_id'][:52]}-{digest[:16]}"
@@ -1398,6 +1427,11 @@ def release_under_standing_policy(args: argparse.Namespace) -> None:
                 "approval_digest": digest,
                 "expires_at": queue["release"]["expires_at"],
                 "maximum_operations": 1,
+                "daily_release_count": daily_release_count,
+                "daily_warning_threshold": STANDING_POLICY_DAILY_WARNING,
+                "daily_warning_reached": (
+                    daily_release_count >= STANDING_POLICY_DAILY_WARNING
+                ),
             },
             separators=(",", ":"),
         )
